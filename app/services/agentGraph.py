@@ -31,6 +31,7 @@ from bs4 import BeautifulSoup #type:ignore
 from pathlib import Path
 current_dir = Path(__file__).parent.absolute()
 
+# TODO: Later on will have model selection for the user so we can use the best model for the task
 LLM = ChatGoogleGenerativeAI(model="gemini-3-flash-preview", google_api_key=config.GEMINI_API_KEY)
 structuredSummaryLLM = LLM.with_structured_output(AgentSummary)
 
@@ -50,7 +51,6 @@ class AgentState(TypedDict):
     posts: list[AgentPost]
 
 def receiverNode(state: AgentState):
-    print("Receiver Node")
     payload = state.get("payload")
     if payload is None:
         raise NoPayloadError("No payload found during Agentic RAG Flow")
@@ -63,7 +63,6 @@ def receiverNode(state: AgentState):
     return {"payload": payload}
 
 def buildingMarketingBrief(state: AgentState):
-    print("Building Marketing Brief Node")
     payload = state.get("payload")
 
     prompt = MARKETING_BRIEF_PROMPT.format(
@@ -82,7 +81,6 @@ def buildingMarketingBrief(state: AgentState):
         raise FailedToBuildMarketingBriefError(f"Failed to build marketing brief: {e}")
 
 def generatingMarketingPosts(state: AgentState):
-    print("Generating Marketing Posts Node")
     marketingNotes = state.get("marketingNotes")
     payload = state.get("payload")
     numberOfPosts = payload.numberOfPosts
@@ -150,10 +148,13 @@ graph = graph.compile(checkpointer=checkpointer)
 
 if __name__ == "__main__":
     config = {"configurable": {"thread_id": uuid.uuid4()}}
-    result = graph.invoke({"payload": AgentRunRequest(url="https://code.claude.com/docs/en/agent-sdk/overview", numberOfPosts=1, startDate=datetime.now())}, config=config, version="v2")
-
-
-    print(result.interrupts)
-
-    answer = AgentPostGenerationInterrupt(actions="Accept")
-    graph.invoke(Command(resume=answer), config=config, version="v2")
+    for chunk in graph.stream(
+        {"payload": AgentRunRequest(url="https://code.claude.com/docs/en/agent-sdk/overview", numberOfPosts=1, startDate=datetime.now())}, 
+        config=config, 
+        version="v2"):
+        if chunk["type"] == "updates":
+            for node_name, state in chunk["data"].items():
+                print(f"Node {node_name}")
+                if node_name == "__interrupt__":
+                    answer = AgentPostGenerationInterrupt(actions="Accept")
+                    graph.invoke(Command(resume=answer), config=config, version="v2")
