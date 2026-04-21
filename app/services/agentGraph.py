@@ -5,9 +5,12 @@ from configurations.config import config
 from typing_extensions import TypedDict, Annotated #type:ignore
 from app.models.AgentModels import AgentRunRequest
 from langgraph.checkpoint.memory import InMemorySaver #type: ignore
-from langgraph.types import interrupt # type: ignore
+from langgraph.types import interrupt, Command # type: ignore
 from app.prompts.detailedDescription import MARKETING_BRIEF_PROMPT
 from app.prompts.postGenerationPrompt import POST_GENERATION_PROMPT
+import uuid 
+from langchain_core.prompts import ChatPromptTemplate #type:ignore
+from langgraph.errors import GraphInterrupt # type:ignore
 
 from app.errorsHandler import (
     NoPayloadError, 
@@ -88,11 +91,18 @@ def generatingMarketingPosts(state: AgentState):
     postNumber = 1
     try:
         for post in range(numberOfPosts):
-            postGeneratePromt = POST_GENERATION_PROMPT
+            postGenerateSystemPrompt = POST_GENERATION_PROMPT
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", "{system_instruction}"),
+                ("human", "{user_input}"),
+            ])
 
-            chain = postGeneratePromt | structuredPostGenerationLLM
+            chain = prompt | structuredPostGenerationLLM
 
-            postGenerated = chain.invoke({"input": {"marketingNotes": marketingNotes, "numberOfPosts": numberOfPosts, "startDate": startDate, "platform": "LinkedIn", "url": payload.url}})
+            postGenerated = chain.invoke({
+                "system_instruction": postGenerateSystemPrompt,
+                "user_input": f"Here is the input 'Marketing Note': {marketingNotes}, 'numberOfPosts': {numberOfPosts}, 'startDate': {startDate}, 'platform': 'LinkedIn', 'url': {payload.url}" ,
+            })
 
             # TODO: Create a self loop node to handle case where the response is invalid and make I can set the max try to 3 before raising the error, for now temporarily raising the error
             if postGenerated.content is None or postGenerated.content == "" or postGenerated.publishDate is None or postGenerated.publishDate == "":
@@ -118,24 +128,32 @@ def generatingMarketingPosts(state: AgentState):
             elif answer.actions == "Regenerate":
                 continue
             print(postList)
-            return {"posts": postList}
+        return {"posts": postList}
+    except GraphInterrupt:
+        raise
     except Exception as e:
         raise FailedToBuildPosts(f"Failed to build posts: {e}")
-
-    
-        
 
 graph = StateGraph(AgentState)
 
 graph.add_node("receiver", receiverNode)
 graph.add_node("buildingMarketingBrief", buildingMarketingBrief)
+graph.add_node("generatingMarketingPosts", generatingMarketingPosts)
 
 
 graph.add_edge(START, "receiver")
 graph.add_edge("receiver", "buildingMarketingBrief")
-graph.add_edge("buildingMarketingBrief", END)
+graph.add_edge("buildingMarketingBrief", "generatingMarketingPosts")
+graph.add_edge("generatingMarketingPosts", END)
 checkpointer = InMemorySaver()
 graph = graph.compile(checkpointer=checkpointer) 
 
 if __name__ == "__main__":
-    graph.invoke({"payload": AgentRunRequest(url="https://code.claude.com/docs/en/agent-sdk/overview", numberOfPosts=1, startDate=datetime.now())})
+    config = {"configurable": {"thread_id": uuid.uuid4()}}
+    result = graph.invoke({"payload": AgentRunRequest(url="https://code.claude.com/docs/en/agent-sdk/overview", numberOfPosts=1, startDate=datetime.now())}, config=config, version="v2")
+
+
+    print(result.interrupts)
+
+    answer = AgentPostGenerationInterrupt(actions="Accept")
+    graph.invoke(Command(resume=answer), config=config, version="v2")

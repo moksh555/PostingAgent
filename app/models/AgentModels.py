@@ -48,7 +48,7 @@ class LLMPostGeneration(BaseModel):
 class AgentPostGenerationInterrupt(BaseModel):
     actions: str = Field(...,description="The actions to takeon the post chose by user",
     )
-    postChangeDescription: str = Field(..., description="The user description of post change if they want to regenerate the post")
+    postChangeDescription: str = Field(default="", description="The user description of post change if they want to regenerate the post")
 
 class AgentPost(BaseModel):
     content: str
