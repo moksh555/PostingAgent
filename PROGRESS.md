@@ -268,22 +268,245 @@ Shortlist for the next iteration:
   of node / LLM / token / interrupt events.
 
 
+## Stage 17 — A second prompt for regeneration
+
+- Once the Accept / Reject interrupt loop was working, `Regenerate` needed
+  its own prompt. The generation prompt was the wrong shape — it asks the
+  model to produce a fresh post from the brief, but on regeneration we
+  already have a draft and specific user feedback to apply.
+- Built `app/prompts/postRegenerationPrompt.py::POST_REGENERATION_PROMPT` as
+  a static system prompt (same "no placeholders" pattern as the generation
+  prompt, for LangChain chaining).
+- The key design decision: make the model **classify the scope of the user's
+  feedback before rewriting**. Two buckets with six concrete examples each:
+  - **Surgical edit** — "drop #LLMs", "fix the typo", "change CTA to point
+    to pricing page". Prompt rule: keep every other sentence word-for-word,
+    do not paraphrase, only change the targeted element.
+  - **Structural rewrite** — "make it shorter", "switch to contrarian
+    angle", "more casual tone". Full rewrite. Product names and brief-sourced
+    stats may stay, but hook and body are re-authored.
+- Tiebreaker: if scope is ambiguous, prefer surgical. Users who want a full
+  rewrite usually say so explicitly.
+- Other hard rules: the brief remains the single source of truth (no
+  inventing facts even on regen), respect the brand AVOID list from the
+  brief, no emojis unless the brief's tone section allows them.
+
+
+## Stage 18 — Splitting generation into a two-node regen architecture
+
+- Originally considered reusing `generatingMarketingPosts` for regeneration
+  via a self-edge. Rejected:
+  - A single node that sometimes generates and sometimes regenerates has to
+    branch on state, switch prompts, and pass different inputs to the LLM.
+    Messy.
+  - A dedicated node lets each prompt stay focused and each code path stay
+    linear.
+- New graph shape:
+
+  ```
+  START
+    → Validating_Payload
+    → Building_Marketing_Brief
+    → Drafting_And_Reviewing_Posts  ⇄  Regenerating_With_Feedback
+                     │                          ↺
+                     ↓
+                    END
+  ```
+
+  - `Drafting_And_Reviewing_Posts` handles initial draft + review. Accept
+    loops back for the next slot; Regenerate hands off to the regen node.
+  - `Regenerating_With_Feedback` takes the rejected draft + user feedback,
+    produces a rewrite, pauses for review. Accept / Reject → back to
+    Drafting; Regenerate → self-loop for another rewrite.
+- Four nodes total: `Validating_Payload`, `Building_Marketing_Brief`,
+  `Drafting_And_Reviewing_Posts`, `Regenerating_With_Feedback`.
+
+
+## Stage 19 — Draft caching to survive interrupt replay
+
+This was the hardest bug of the project: **LangGraph replays nodes on
+resume, it doesn't continue them from where they paused**.
+
+- When `interrupt()` resolves via `Command(resume=...)`, LangGraph re-runs
+  the whole node from the top. It caches each `interrupt()` call's resume
+  value by *position in the node* — so on replay, the N-th `interrupt()`
+  returns the stored answer instantly.
+- Critically, LangGraph **does not** cache arbitrary function calls. LLM
+  invocations re-run on every replay.
+- Failure mode of a naive loop (`LLM → interrupt → LLM → interrupt → …`):
+  - For N posts, N² LLM calls across all resumes.
+  - Worse: each replay of a given iteration produces a **different** draft
+    (LLMs are non-deterministic). The cached interrupt value says "Accept"
+    for draft X, but on replay the new draft is X' — so X' lands in the
+    final posts list, not the X the user actually approved. Silent data
+    corruption.
+- Fix: use the state dict as a cache and split each produce/review cycle
+  into **two node invocations**, separated by a checkpoint:
+
+  1. **Invocation A (produce)** — if `state["cacheDraft"]` is None, call
+     the LLM, validate the output, return `{"cacheDraft": draft, ...}`.
+     No `interrupt()` on this invocation.
+  2. **Router** — sees there's more work to do, routes back to the same
+     node.
+  3. **Invocation B (review)** — `cacheDraft` is populated, skip the LLM
+     branch entirely, call `interrupt(...)`, process the answer, clear
+     the cache in the return.
+
+- On resume, Invocation B is replayed — but Invocation B never touched the
+  LLM in the first place (it only reads `cacheDraft`), so replay is cheap
+  and the draft the user approved is exactly the draft that gets appended.
+- Same pattern copied to `Regenerating_With_Feedback` so regeneration also
+  runs the LLM exactly once per draft, regardless of replays.
+
+
+## Stage 20 — State-driven iteration with `currentLoopStartNumber`
+
+- First version had an in-memory `for` loop over `numberOfPosts` inside
+  `generatingMarketingPosts`. Worked until the first Regenerate, at which
+  point:
+  - The node returned control to `Regenerating_With_Feedback`.
+  - Regen finished, control came back to `Drafting_And_Reviewing_Posts`.
+  - The local `postList = []` reset to empty, loop restarted, and the final
+    return `{"posts": postList}` **overwrote** the previously-accepted
+    posts in state with an empty list.
+- Moved iteration into state:
+  - `currentLoopStartNumber: int` tracks how many slots have been decided.
+  - Every invocation starts with `postList = state.get("posts") or []`
+    (load existing) instead of a fresh list.
+  - Every Accept / Reject / Regenerate return increments
+    `currentLoopStartNumber` and carries the updated `posts` list forward.
+  - The node only performs one step per invocation — either a produce or a
+    review — then returns. The router decides whether to come back.
+- **Semantic trap I hit twice**: `currentLoopStartNumber` must mean "slots
+  decided", **not** "drafts produced".
+  - First attempt: incremented on both produce and decide → counter moved
+    twice per post → graph ended at `N/2` posts.
+  - Second attempt: incremented only on produce → counter moved ahead of
+    reviews → graph ended with the last draft still sitting in cache,
+    unreviewed.
+  - Correct: increment only on Accept / Reject / Regenerate (the decisions
+    that end a slot's cycle).
+
+
+## Stage 21 — Retry counters and failure-flag state hygiene
+
+- If the LLM returns empty / invalid content, the node writes
+  `{"failedToBuildPostsatGeneration": True, "failedToBuildPostatGenerationNumber": count + 1}`
+  and returns. The router retries while the count is < 3, and returns `END`
+  once exhausted. Same for the regen side with `...atRegeneration`.
+- Two subtle bugs here:
+  1. **`None + 1`**. On the first failure the counter is `None` in state,
+     because it was never initialised. Addressed by reading with
+     `state.get("...", 0)` or `or 0` at every read site.
+  2. **Stale failure flag never cleared.** When a retry succeeded, the
+     node reset its local `failedFlag = False` and `count = 0` — but those
+     locals never made it back to state because the subsequent returns
+     didn't include the keys. The router then kept seeing
+     `failedFlag=True` in state forever, and the `elif` structure of the
+     router meant the failure branch **bypassed the "are we done yet?"
+     progress check**. Result: after any transient failure, the graph
+     could never exit cleanly — it either looped forever or terminated
+     early depending on the counter state.
+- Fix: every success-path return (post-LLM cache write, Accept, Reject,
+  Regenerate) now explicitly carries
+  `"failedToBuildPostsatGeneration": False` and
+  `"failedToBuildPostatGenerationNumber": 0` into state. Same for the regen
+  flags. The router's fail branch is now only live while a real failure
+  exists.
+
+
+## Stage 22 — Router design and conditional-edge gotchas
+
+Things I learned the hard way about `add_conditional_edges`:
+
+- **Only one `add_conditional_edges` per source node.** Early on I had
+  two on `Drafting_And_Reviewing_Posts`: one for Regenerate-vs-END and
+  another for retry-vs-END. The second call silently overwrote the first,
+  so the Regenerate route never fired. Consolidated into a single routing
+  function per source node that handles every transition.
+- **A routing function returning `None` crashes the graph.** If a function
+  falls off the end without a `return`, it returns `None`, which isn't a
+  valid destination in LangGraph's edge mapping. Every branch must resolve
+  to either `END` or a named node string. I hit this when I had
+  `elif failed: if count < 3: return ...` with no `else` — the
+  "retries exhausted" path returned `None`. Fixed by adding a terminal
+  `return END` at the function level.
+- **`None < int` raises `TypeError`.** State keys read via `state.get(...)`
+  return `None` when unset. Comparisons like
+  `state.get("currentLoopStartNumber") < numberOfPosts` blow up on the
+  first run. Fixed everywhere with `(state.get("...") or 0)`.
+
+Final gen-side router logic, in priority order:
+
+1. `regeneratePost` truthy → `Regenerating_With_Feedback`
+2. `failedToBuildPostsatGeneration` truthy:
+   - retries left (`count < 3`) → same node (retry)
+   - otherwise fall through to `END`
+3. `currentLoopStartNumber < numberOfPosts` → same node (next slot)
+4. Otherwise → `END`
+
+Regen-side mirror:
+
+1. `regeneratePost` falsy → `Drafting_And_Reviewing_Posts` (escape)
+2. `failedToBuildPostsatRegeneration` + count ≥ 3 → `END`
+3. Otherwise → same node (self-loop for chained regen, or waiting for
+   review)
+
+
+## Stage 23 — Graph visualisation helper
+
+- Added `tests/graphGenerating.py` to dump the compiled graph as both a
+  Mermaid string and a `graph.png`. Small but handy during the regen
+  restructure — re-running it after each edit made wiring mistakes
+  immediately obvious.
+- Tricks the script pulls:
+  - Stubs out `IPython.display` before importing the graph module, so
+    LangGraph's `draw_mermaid_png` helpers don't `ModuleNotFoundError` in
+    an environment without IPython.
+  - Adds `Backend/` to `sys.path` so `app.*` and `configurations.*`
+    resolve when running the script directly.
+- Avoided installing Graphviz system-wide (the `pygraphviz` build pulls in
+  C headers); LangGraph's Mermaid renderer covers the same ground with
+  zero native deps.
+
+
 ## What the system does end-to-end today
 
 1. Client `POST /api/v1/runAgent` with `{url, numberOfPosts, startDate}`.
 2. FastAPI validates the body → `AgentRunRequest`.
-3. `AgentServices.runAgent` compiles and invokes the LangGraph.
-4. **receiverNode** — sanity-checks the payload.
-5. **buildingMarketingBrief** — calls Gemini in a continuation loop,
-   produces a 12-section brief, writes it to `testSummary/<slug>.txt`.
-6. **generatingMarketingPosts** — for each of `numberOfPosts`:
-   - Chains the post-generation prompt with `LLMPostGeneration` structured
-     output.
-   - `interrupt(...)` pauses the graph with
+3. `AgentServices.runAgent` compiles and invokes the LangGraph with a
+   stable `thread_id` so the checkpointer can pause / resume across
+   interrupts.
+4. **Validating_Payload** — sanity-checks the payload (redundant with the
+   FastAPI boundary, useful for direct-invocation tests).
+5. **Building_Marketing_Brief** — Gemini in a continuation loop produces
+   a 12-section brief; `writeSummaryToFile` persists it under
+   `testSummary/<slug>.txt`.
+6. **Drafting_And_Reviewing_Posts** — state machine; one step per
+   invocation:
+   - **Produce step** (cache miss): chain the generation prompt with
+     `LLMPostGeneration` structured output, validate, write draft to
+     `cacheDraft`, return. Router loops back for the review step.
+   - **Review step** (cache hit): `interrupt(...)` pauses with
      `{postContent, publishDate, actions: [Accept, Reject, Regenerate]}`.
-   - Client resumes with a decision; Accept appends the post, Regenerate
-     loops back on the same slot.
-7. Returns `posts: list[AgentPost]`.
+7. Client resumes via `Command(resume=AgentPostGenerationInterrupt(...))`:
+   - **Accept** — append `AgentPost`, clear `cacheDraft`, increment
+     `currentLoopStartNumber`, reset failure flags. Router loops back if
+     more posts are needed; otherwise `END`.
+   - **Reject** — clear `cacheDraft`, increment
+     `currentLoopStartNumber`, reset failure flags. (Reject = skip this
+     slot; delivers fewer posts than requested.)
+   - **Regenerate** — set `regeneratePost: True`, stash the draft in
+     `postToRegenerate`, send `postChangeDescription` along. Router hands
+     off to `Regenerating_With_Feedback`.
+8. **Regenerating_With_Feedback** — same produce/review state machine but
+   with `POST_REGENERATION_PROMPT` and access to the previous draft +
+   user feedback. Accept / Reject → back to
+   `Drafting_And_Reviewing_Posts`; Regenerate self-loops for another
+   rewrite.
+9. Consecutive LLM failures are retried up to 3 times per stage; beyond
+   that the graph terminates cleanly at `END`.
+10. Returns `posts: list[AgentPost]`.
 
 
 ## Lessons worth keeping
@@ -295,10 +518,34 @@ Shortlist for the next iteration:
 - **LangGraph interrupts are just exceptions** under the hood — any
   `try/except Exception` in a node will silently break pause/resume unless
   you passthrough `GraphInterrupt` explicitly.
+- **LangGraph replays nodes, it doesn't resume them.** Every interrupt
+  resume re-runs the node from the top. Anything that must not run twice
+  (LLM calls, paid side effects, non-deterministic work) has to be cached
+  in state and guarded on replay.
+- **State mutations must travel via node returns.** Updating a Python
+  local doesn't persist — the checkpointer only sees what a node returns.
+  If you want to clear a flag, return `{"flag": False}`; don't just
+  reassign the local.
+- **Increment counters on decide, not on produce.** A slot is "done" when
+  the user Accepts / Rejects / Regenerates, not when the LLM has produced
+  a draft. Getting this wrong ends the graph one cycle early or late.
+- **State keys compared to numbers need defaults.** Either seed them in an
+  upstream node or `or 0` them at every read site. `None < int` is a hard
+  crash.
+- **One `add_conditional_edges` per source node.** Multiple calls
+  overwrite; a single router function must handle every transition.
+  Routers that fall off the end (return `None`) crash the graph — every
+  branch needs a terminal.
+- **Two prompts for two tasks.** Reusing a generation prompt for
+  regeneration means the model keeps producing from-scratch posts instead
+  of targeted rewrites. Distinct prompts, distinct node, distinct inputs.
+- **Surgical vs structural is a real UX distinction.** A regen prompt that
+  always rewrites everything feels aggressive when the user only asked to
+  drop a hashtag. Teach the model to classify scope before acting.
 - **Structured output and long-form output fight each other.** Keep the
-  long body plain-text with a continuation loop; use structured output only
-  for the fields you actually need to parse.
+  long body plain-text with a continuation loop; use structured output
+  only for the fields you actually need to parse.
 - **Prompt ↔ schema must agree.** If the prompt asks for 8 fields but the
   schema has 2, the schema wins and the prompt's instructions get ignored.
-- **`python -m` is the right way to run a module** inside a package — don't
-  run the file directly.
+- **`python -m` is the right way to run a module** inside a package —
+  don't run the file directly.
