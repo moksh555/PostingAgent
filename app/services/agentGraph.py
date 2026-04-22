@@ -1,39 +1,49 @@
-from langgraph.graph import StateGraph, START, END #type: ignore
-from langchain_google_genai import ChatGoogleGenerativeAI #type:ignore
+from pathlib import Path
+
+from typing_extensions import TypedDict  # type: ignore
+
+from langchain_core.prompts import ChatPromptTemplate  # type: ignore
+from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
+from langgraph.checkpoint.memory import InMemorySaver  # type: ignore
+from langgraph.errors import GraphInterrupt  # type: ignore
+from langgraph.graph import StateGraph, START, END  # type: ignore
+from langgraph.types import interrupt  # type: ignore
+
 from configurations.config import config
-from typing_extensions import TypedDict #type:ignore
-from app.models.AgentModels import AgentRunRequest
-from langgraph.checkpoint.memory import InMemorySaver #type: ignore
-from langgraph.types import interrupt # type: ignore
+
+from app.errorsHandler import (
+    NoPayloadError,
+    NoURLError,
+    NoNumberOfPostsError,
+    NoStartDateError,
+    FailedToBuildMarketingBriefError,
+    FailedToBuildPosts,
+)
+from app.models.AgentModels import (
+    AgentRunRequest,
+    AgentSummary,
+    LLMPostGeneration,
+    AgentPost,
+    AgentPostGenerationInterrupt,
+)
 from app.prompts.detailedDescription import MARKETING_BRIEF_PROMPT
 from app.prompts.postGenerationPrompt import POST_GENERATION_PROMPT
 from app.prompts.postRegenerationPrompt import POST_REGENERATION_PROMPT
-from langchain_core.prompts import ChatPromptTemplate #type:ignore
-from langgraph.errors import GraphInterrupt # type:ignore
-
-from app.errorsHandler import (
-    NoPayloadError, 
-    NoURLError, 
-    NoNumberOfPostsError, 
-    NoStartDateError, 
-    FailedToBuildMarketingBriefError,
-    FailedToBuildPosts
-)
-from app.models.AgentModels import (
-    AgentSummary, 
-    LLMPostGeneration, 
-    AgentPost,
-    AgentPostGenerationInterrupt
-)
-from pathlib import Path
 
 
 # TODO: Later on will have model selection for the user so we can use the best model for the task
-LLM = ChatGoogleGenerativeAI(model="gemini-3-flash-preview", google_api_key=config.GEMINI_API_KEY)
+LLM = ChatGoogleGenerativeAI(
+    model="gemini-3-flash-preview",
+    google_api_key=config.GEMINI_API_KEY,
+)
 structuredSummaryLLM = LLM.with_structured_output(AgentSummary)
 
-PostGenerationLLM = ChatGoogleGenerativeAI(model="gemini-3-flash-preview", google_api_key=config.GEMINI_API_KEY)
+PostGenerationLLM = ChatGoogleGenerativeAI(
+    model="gemini-3-flash-preview",
+    google_api_key=config.GEMINI_API_KEY,
+)
 structuredPostGenerationLLM = PostGenerationLLM.with_structured_output(LLMPostGeneration)
+
 
 def writeSummaryToFile(response: AgentSummary) -> Path:
     # TODO: Write to S3 and get the URL for the file to be used in the next node for generating posts based on the content of the file
@@ -41,6 +51,7 @@ def writeSummaryToFile(response: AgentSummary) -> Path:
     with open(filePath, "w", encoding="utf-8") as f:
         f.write(response.marketingBrief)
     return filePath
+
 
 class AgentState(TypedDict):
     payload: AgentRunRequest
@@ -56,6 +67,7 @@ class AgentState(TypedDict):
     currentLoopStartNumber: int
     cacheDraft: LLMPostGeneration
 
+
 def receiverNode(state: AgentState):
     payload = state.get("payload")
     if payload is None:
@@ -68,6 +80,7 @@ def receiverNode(state: AgentState):
         raise NoStartDateError("No start date found during Agentic RAG Flow")
     return {"payload": payload}
 
+
 def buildingMarketingBrief(state: AgentState):
     payload = state.get("payload")
 
@@ -79,12 +92,19 @@ def buildingMarketingBrief(state: AgentState):
     try:
         response = structuredSummaryLLM.invoke(prompt)
 
-        if response.marketingBrief is None or response.marketingBrief == "" or response.fileName is None or response.fileName == "":
+        if (
+            response.marketingBrief is None
+            or response.marketingBrief == ""
+            or response.fileName is None
+            or response.fileName == ""
+        ):
             raise FailedToBuildMarketingBriefError("Response from model is invalid")
+
         writeSummaryToFile(response)
         return {"marketingNotes": response.marketingBrief}
     except Exception as e:
         raise FailedToBuildMarketingBriefError(f"Failed to build marketing brief: {e}")
+
 
 def generatingMarketingPosts(state: AgentState):
     marketingNotes = state.get("marketingNotes")
@@ -97,9 +117,10 @@ def generatingMarketingPosts(state: AgentState):
     currentLoopStartNumber = state.get("currentLoopStartNumber") or 0
     postGenerateSystemPrompt = POST_GENERATION_PROMPT
     cacheDraft = state.get("cacheDraft")
+
     try:
         for _ in range(currentLoopStartNumber, numberOfPosts):
-            
+
             if cacheDraft is not None:
                 postGenerated = cacheDraft
             else:
@@ -112,20 +133,30 @@ def generatingMarketingPosts(state: AgentState):
 
                 postGenerated = chain.invoke({
                     "system_instruction": postGenerateSystemPrompt,
-                    "user_input": f"Here is the input 'Marketing Note': {marketingNotes}, 'numberOfPosts': {numberOfPosts}, 'startDate': {startDate}, 'platform': 'LinkedIn', 'url': {payload.url}" ,
+                    "user_input": f"Here is the input 'Marketing Note': {marketingNotes}, 'numberOfPosts': {numberOfPosts}, 'startDate': {startDate}, 'platform': 'LinkedIn', 'url': {payload.url}",
                 })
 
-                if postGenerated.content is None or postGenerated.content == "" or postGenerated.publishDate is None or postGenerated.publishDate == "":
-                    return {"failedToBuildPostsatGeneration": True, "failedToBuildPostatGenerationNumber": failedToBuildPostatGenerationNumber + 1}
-            
+                if (
+                    postGenerated.content is None
+                    or postGenerated.content == ""
+                    or postGenerated.publishDate is None
+                    or postGenerated.publishDate == ""
+                ):
+                    return {
+                        "failedToBuildPostsatGeneration": True,
+                        "failedToBuildPostatGenerationNumber": failedToBuildPostatGenerationNumber + 1,
+                    }
+
                 failedToBuildPostatGenerationNumber = 0
                 failedToBuildPostsatGeneration = False
-                return {"cacheDraft": postGenerated , "posts": postList, "failedToBuildPostsatGeneration": failedToBuildPostsatGeneration, "failedToBuildPostatGenerationNumber": failedToBuildPostatGenerationNumber}
-            
+                return {
+                    "cacheDraft": postGenerated,
+                    "posts": postList,
+                    "failedToBuildPostsatGeneration": failedToBuildPostsatGeneration,
+                    "failedToBuildPostatGenerationNumber": failedToBuildPostatGenerationNumber,
+                }
 
-            
-            
-            answer : AgentPostGenerationInterrupt = interrupt({
+            answer: AgentPostGenerationInterrupt = interrupt({
                 "postContent": postGenerated.content,
                 "publishDate": postGenerated.publishDate,
                 "actions": ["Accept", "Reject", "Regenerate"],
@@ -139,31 +170,34 @@ def generatingMarketingPosts(state: AgentState):
                     postNumber=len(postList) + 1,
                 ))
                 return {
-                    "posts": postList, 
-                    "cacheDraft": None, 
+                    "posts": postList,
+                    "cacheDraft": None,
                     "currentLoopStartNumber": currentLoopStartNumber + 1,
                     "failedToBuildPostsatGeneration": failedToBuildPostsatGeneration,
-                    "failedToBuildPostatGenerationNumber": failedToBuildPostatGenerationNumber
-                    }
+                    "failedToBuildPostatGenerationNumber": failedToBuildPostatGenerationNumber,
+                }
             elif answer.actions == "Reject":
                 return {
-                    "cacheDraft": None, 
-                    "currentLoopStartNumber": currentLoopStartNumber + 1, 
-                    "failedToBuildPostsatGeneration": failedToBuildPostsatGeneration, "failedToBuildPostatGenerationNumber": failedToBuildPostatGenerationNumber
-                    }
+                    "cacheDraft": None,
+                    "currentLoopStartNumber": currentLoopStartNumber + 1,
+                    "failedToBuildPostsatGeneration": failedToBuildPostsatGeneration,
+                    "failedToBuildPostatGenerationNumber": failedToBuildPostatGenerationNumber,
+                }
             elif answer.actions == "Regenerate":
                 return {
-                    "regeneratePost": True, 
-                    "postRegenerationDescription": answer.postChangeDescription, 
-                    "postToRegenerate": postGenerated, 
-                    "cacheDraft": None, 
-                    "currentLoopStartNumber": currentLoopStartNumber + 1, 
-                    "failedToBuildPostsatGeneration": failedToBuildPostsatGeneration, "failedToBuildPostatGenerationNumber": failedToBuildPostatGenerationNumber
-                    }
+                    "regeneratePost": True,
+                    "postRegenerationDescription": answer.postChangeDescription,
+                    "postToRegenerate": postGenerated,
+                    "cacheDraft": None,
+                    "currentLoopStartNumber": currentLoopStartNumber + 1,
+                    "failedToBuildPostsatGeneration": failedToBuildPostsatGeneration,
+                    "failedToBuildPostatGenerationNumber": failedToBuildPostatGenerationNumber,
+                }
     except GraphInterrupt:
         raise
     except Exception as e:
         raise FailedToBuildPosts(f"Failed to build posts: {e}") from e
+
 
 def regeneratePost(state: AgentState):
     marketingNotes = state.get("marketingNotes")
@@ -174,42 +208,55 @@ def regeneratePost(state: AgentState):
     postsList = state.get("posts") or []
     failedToBuildPostatRegenerationNumber = state.get("failedToBuildPostatRegenerationNumber")
     failedToBuildPostsatRegeneration = state.get("failedToBuildPostsatRegeneration")
+    cacheDraft = state.get("cacheDraft")
+
     prompt = ChatPromptTemplate.from_messages([
         ("system", "{system_instruction}"),
         ("human", "{user_input}"),
     ])
-    cacheDraft = state.get("cacheDraft")
     chain = prompt | structuredPostGenerationLLM
 
-    try: 
+    try:
         if cacheDraft is not None:
             postReGenerated = cacheDraft
         else:
             postReGenerated = chain.invoke({
-            "system_instruction": postGenerateSystemPrompt,
-            "user_input": f"Here is the input 'postToRegenerate': {postToRegenerate.content}, 'postRegenerationDescription': {postRegenerationDescription}, 'Notes': {marketingNotes}, url: {payload.url}, publishDate: {postToRegenerate.publishDate}" ,
-        })
-            if postReGenerated.content is None or postReGenerated.content == "" or postReGenerated.publishDate is None or postReGenerated.publishDate == "":
+                "system_instruction": postGenerateSystemPrompt,
+                "user_input": f"Here is the input 'postToRegenerate': {postToRegenerate.content}, 'postRegenerationDescription': {postRegenerationDescription}, 'Notes': {marketingNotes}, url: {payload.url}, publishDate: {postToRegenerate.publishDate}",
+            })
+
+            if (
+                postReGenerated.content is None
+                or postReGenerated.content == ""
+                or postReGenerated.publishDate is None
+                or postReGenerated.publishDate == ""
+            ):
                 return {
-                    "failedToBuildPostsatRegeneration": True, 
-                    "failedToBuildPostatRegenerationNumber": failedToBuildPostatRegenerationNumber + 1}
+                    "failedToBuildPostsatRegeneration": True,
+                    "failedToBuildPostatRegenerationNumber": failedToBuildPostatRegenerationNumber + 1,
+                }
+
             failedToBuildPostatRegenerationNumber = 0
             failedToBuildPostsatRegeneration = False
-            return {"cacheDraft": postReGenerated, "failedToBuildPostsatRegeneration": failedToBuildPostsatRegeneration, "failedToBuildPostatRegenerationNumber": failedToBuildPostatRegenerationNumber}
-        
-        answer : AgentPostGenerationInterrupt = interrupt({
-                "postContent": postReGenerated.content,
-                "publishDate": postReGenerated.publishDate,
-                "actions": ["Accept", "Reject", "Regenerate"],
-            })
+            return {
+                "cacheDraft": postReGenerated,
+                "failedToBuildPostsatRegeneration": failedToBuildPostsatRegeneration,
+                "failedToBuildPostatRegenerationNumber": failedToBuildPostatRegenerationNumber,
+            }
+
+        answer: AgentPostGenerationInterrupt = interrupt({
+            "postContent": postReGenerated.content,
+            "publishDate": postReGenerated.publishDate,
+            "actions": ["Accept", "Reject", "Regenerate"],
+        })
+
         if answer.actions == "Regenerate":
             return {
-                "regeneratePost": True, 
-                "postRegenerationDescription": answer.postChangeDescription, 
-                "postToRegenerate": postReGenerated, 
-                "cacheDraft": None, 
-
-                }
+                "regeneratePost": True,
+                "postRegenerationDescription": answer.postChangeDescription,
+                "postToRegenerate": postReGenerated,
+                "cacheDraft": None,
+            }
         elif answer.actions == "Accept":
             postsList.append(AgentPost(
                 content=postReGenerated.content,
@@ -218,23 +265,24 @@ def regeneratePost(state: AgentState):
                 postNumber=len(postsList) + 1,
             ))
             return {
-                "posts": postsList, 
-                "regeneratePost": False, 
-                "postRegenerationDescription": "", 
-                "postToRegenerate": None, 
-                "cacheDraft": None, 
-                }
+                "posts": postsList,
+                "regeneratePost": False,
+                "postRegenerationDescription": "",
+                "postToRegenerate": None,
+                "cacheDraft": None,
+            }
         elif answer.actions == "Reject":
             return {
-                "regeneratePost": False, 
-                "postRegenerationDescription": "", 
-                "postToRegenerate": None, 
-                "cacheDraft": None, 
-                }
+                "regeneratePost": False,
+                "postRegenerationDescription": "",
+                "postToRegenerate": None,
+                "cacheDraft": None,
+            }
     except GraphInterrupt:
         raise
     except Exception as e:
         raise FailedToBuildPosts(f"Failed to regenerate post: {e}") from e
+
 
 graph = StateGraph(AgentState)
 
@@ -242,6 +290,7 @@ graph.add_node("Validating_Payload", receiverNode)
 graph.add_node("Building_Marketing_Brief", buildingMarketingBrief)
 graph.add_node("Drafting_And_Reviewing_Posts", generatingMarketingPosts)
 graph.add_node("Regenerating_With_Feedback", regeneratePost)
+
 
 def routingGneratePostsNode(state: AgentState):
     if state.get("regeneratePost"):
@@ -253,6 +302,7 @@ def routingGneratePostsNode(state: AgentState):
         return "Drafting_And_Reviewing_Posts"
     return END
 
+
 def routingReGneratePostsNode(state: AgentState):
     if not state.get("regeneratePost"):
         return "Drafting_And_Reviewing_Posts"
@@ -261,19 +311,20 @@ def routingReGneratePostsNode(state: AgentState):
             return END
     return "Regenerating_With_Feedback"
 
+
 graph.add_edge(START, "Validating_Payload")
 graph.add_edge("Validating_Payload", "Building_Marketing_Brief")
 graph.add_edge("Building_Marketing_Brief", "Drafting_And_Reviewing_Posts")
 
 graph.add_conditional_edges(
-    "Drafting_And_Reviewing_Posts", 
+    "Drafting_And_Reviewing_Posts",
     routingGneratePostsNode,
     {
         "Regenerating_With_Feedback": "Regenerating_With_Feedback",
         "Drafting_And_Reviewing_Posts": "Drafting_And_Reviewing_Posts",
         END: END,
-    }
-    )
+    },
+)
 
 graph.add_conditional_edges(
     "Regenerating_With_Feedback",
@@ -282,17 +333,17 @@ graph.add_conditional_edges(
         "Regenerating_With_Feedback": "Regenerating_With_Feedback",
         "Drafting_And_Reviewing_Posts": "Drafting_And_Reviewing_Posts",
         END: END,
-    }
+    },
 )
 
 checkpointer = InMemorySaver()
-graph = graph.compile(checkpointer=checkpointer) 
+graph = graph.compile(checkpointer=checkpointer)
 
 # if __name__ == "__main__":
 #     config = {"configurable": {"thread_id": uuid.uuid4()}}
 #     for chunk in graph.stream(
-#         {"payload": AgentRunRequest(url="https://code.claude.com/docs/en/agent-sdk/overview", numberOfPosts=1, startDate=datetime.now())}, 
-#         config=config, 
+#         {"payload": AgentRunRequest(url="https://code.claude.com/docs/en/agent-sdk/overview", numberOfPosts=1, startDate=datetime.now())},
+#         config=config,
 #         version="v2"):
 #         if chunk["type"] == "updates":
 #             for node_name, state in chunk["data"].items():
