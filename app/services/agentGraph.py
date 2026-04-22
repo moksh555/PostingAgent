@@ -4,10 +4,11 @@ from typing_extensions import TypedDict  # type: ignore
 
 from langchain_core.prompts import ChatPromptTemplate  # type: ignore
 from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
-from langgraph.checkpoint.memory import InMemorySaver  # type: ignore
+from langgraph.checkpoint.memory import InMemorySaver   # type: ignore
+from langgraph.runtime import Runtime  # type: ignore
 from langgraph.errors import GraphInterrupt  # type: ignore
 from langgraph.graph import StateGraph, START, END  # type: ignore
-from langgraph.types import interrupt  # type: ignore
+from langgraph.types import interrupt, RetryPolicy  # type: ignore
 
 from configurations.config import config
 
@@ -59,11 +60,7 @@ class AgentState(TypedDict):
     posts: list[AgentPost]
     regeneratePost: bool
     postRegenerationDescription: str
-    failedToBuildPostsatGeneration: bool
     postToRegenerate: LLMPostGeneration
-    failedToBuildPostsatRegeneration: bool
-    failedToBuildPostatRegenerationNumber: int
-    failedToBuildPostatGenerationNumber: int
     currentLoopStartNumber: int
     cacheDraft: LLMPostGeneration
 
@@ -106,14 +103,12 @@ def buildingMarketingBrief(state: AgentState):
         raise FailedToBuildMarketingBriefError(f"Failed to build marketing brief: {e}")
 
 
-def generatingMarketingPosts(state: AgentState):
+def generatingMarketingPosts(state: AgentState, runtime: Runtime):
     marketingNotes = state.get("marketingNotes")
     payload = state.get("payload")
     numberOfPosts = payload.numberOfPosts
     startDate = state.get("payload").startDate
     postList = state.get("posts") or []
-    failedToBuildPostatGenerationNumber = state.get("failedToBuildPostatGenerationNumber")
-    failedToBuildPostsatGeneration = state.get("failedToBuildPostsatGeneration")
     currentLoopStartNumber = state.get("currentLoopStartNumber") or 0
     postGenerateSystemPrompt = POST_GENERATION_PROMPT
     cacheDraft = state.get("cacheDraft")
@@ -142,18 +137,13 @@ def generatingMarketingPosts(state: AgentState):
                     or postGenerated.publishDate is None
                     or postGenerated.publishDate == ""
                 ):
-                    return {
-                        "failedToBuildPostsatGeneration": True,
-                        "failedToBuildPostatGenerationNumber": failedToBuildPostatGenerationNumber + 1,
-                    }
+                    raise FailedToBuildPosts(
+                        f"Failed to generate post: Invalid response from model"
+                    )
 
-                failedToBuildPostatGenerationNumber = 0
-                failedToBuildPostsatGeneration = False
                 return {
                     "cacheDraft": postGenerated,
                     "posts": postList,
-                    "failedToBuildPostsatGeneration": failedToBuildPostsatGeneration,
-                    "failedToBuildPostatGenerationNumber": failedToBuildPostatGenerationNumber,
                 }
 
             answer: AgentPostGenerationInterrupt = interrupt({
@@ -173,15 +163,11 @@ def generatingMarketingPosts(state: AgentState):
                     "posts": postList,
                     "cacheDraft": None,
                     "currentLoopStartNumber": currentLoopStartNumber + 1,
-                    "failedToBuildPostsatGeneration": failedToBuildPostsatGeneration,
-                    "failedToBuildPostatGenerationNumber": failedToBuildPostatGenerationNumber,
                 }
             elif answer.actions == "Reject":
                 return {
                     "cacheDraft": None,
                     "currentLoopStartNumber": currentLoopStartNumber + 1,
-                    "failedToBuildPostsatGeneration": failedToBuildPostsatGeneration,
-                    "failedToBuildPostatGenerationNumber": failedToBuildPostatGenerationNumber,
                 }
             elif answer.actions == "Regenerate":
                 return {
@@ -190,24 +176,22 @@ def generatingMarketingPosts(state: AgentState):
                     "postToRegenerate": postGenerated,
                     "cacheDraft": None,
                     "currentLoopStartNumber": currentLoopStartNumber + 1,
-                    "failedToBuildPostsatGeneration": failedToBuildPostsatGeneration,
-                    "failedToBuildPostatGenerationNumber": failedToBuildPostatGenerationNumber,
                 }
     except GraphInterrupt:
+        raise
+    except FailedToBuildPosts:
         raise
     except Exception as e:
         raise FailedToBuildPosts(f"Failed to build posts: {e}") from e
 
 
-def regeneratePost(state: AgentState):
+def regeneratePost(state: AgentState, runtime: Runtime):
     marketingNotes = state.get("marketingNotes")
     payload = state.get("payload")
     postToRegenerate = state.get("postToRegenerate")
     postRegenerationDescription = state.get("postRegenerationDescription")
     postGenerateSystemPrompt = POST_REGENERATION_PROMPT
     postsList = state.get("posts") or []
-    failedToBuildPostatRegenerationNumber = state.get("failedToBuildPostatRegenerationNumber")
-    failedToBuildPostsatRegeneration = state.get("failedToBuildPostsatRegeneration")
     cacheDraft = state.get("cacheDraft")
 
     prompt = ChatPromptTemplate.from_messages([
@@ -231,17 +215,12 @@ def regeneratePost(state: AgentState):
                 or postReGenerated.publishDate is None
                 or postReGenerated.publishDate == ""
             ):
-                return {
-                    "failedToBuildPostsatRegeneration": True,
-                    "failedToBuildPostatRegenerationNumber": failedToBuildPostatRegenerationNumber + 1,
-                }
+                raise FailedToBuildPosts(
+                    f"Failed to regenerate post: Invalid response from model"
+                    )
 
-            failedToBuildPostatRegenerationNumber = 0
-            failedToBuildPostsatRegeneration = False
             return {
                 "cacheDraft": postReGenerated,
-                "failedToBuildPostsatRegeneration": failedToBuildPostsatRegeneration,
-                "failedToBuildPostatRegenerationNumber": failedToBuildPostatRegenerationNumber,
             }
 
         answer: AgentPostGenerationInterrupt = interrupt({
@@ -280,24 +259,45 @@ def regeneratePost(state: AgentState):
             }
     except GraphInterrupt:
         raise
+    except FailedToBuildPosts:
+        raise
     except Exception as e:
         raise FailedToBuildPosts(f"Failed to regenerate post: {e}") from e
 
 
 graph = StateGraph(AgentState)
 
-graph.add_node("Validating_Payload", receiverNode)
-graph.add_node("Building_Marketing_Brief", buildingMarketingBrief)
-graph.add_node("Drafting_And_Reviewing_Posts", generatingMarketingPosts)
-graph.add_node("Regenerating_With_Feedback", regeneratePost)
+graph.add_node(
+    "Validating_Payload", 
+    receiverNode
+    )
+graph.add_node(
+    "Building_Marketing_Brief", 
+    buildingMarketingBrief
+    )
+graph.add_node(
+    "Drafting_And_Reviewing_Posts", 
+    generatingMarketingPosts,
+    retry_policy=RetryPolicy(
+        max_attempts=3,
+        backoff_factor=3,
+        retry_on = [FailedToBuildPosts],
+    )
+    )
+graph.add_node(
+    "Regenerating_With_Feedback", 
+    regeneratePost,
+    retry_policy=RetryPolicy(
+        max_attempts=3,
+        backoff_factor=3,
+        retry_on = [FailedToBuildPosts],
+    ),
+    )
 
 
 def routingGneratePostsNode(state: AgentState):
     if state.get("regeneratePost"):
         return "Regenerating_With_Feedback"
-    elif state.get("failedToBuildPostsatGeneration"):
-        if (state.get("failedToBuildPostatGenerationNumber") or 0) < 3:
-            return "Drafting_And_Reviewing_Posts"
     elif (state.get("currentLoopStartNumber") or 0) < state.get("payload").numberOfPosts:
         return "Drafting_And_Reviewing_Posts"
     return END
@@ -306,9 +306,6 @@ def routingGneratePostsNode(state: AgentState):
 def routingReGneratePostsNode(state: AgentState):
     if not state.get("regeneratePost"):
         return "Drafting_And_Reviewing_Posts"
-    elif state.get("failedToBuildPostsatRegeneration"):
-        if (state.get("failedToBuildPostatRegenerationNumber") or 0) >= 3:
-            return END
     return "Regenerating_With_Feedback"
 
 
