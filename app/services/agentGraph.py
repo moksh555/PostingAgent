@@ -12,6 +12,7 @@ import uuid
 from langchain_core.prompts import ChatPromptTemplate #type:ignore
 from langgraph.errors import GraphInterrupt # type:ignore
 
+
 from app.errorsHandler import (
     NoPayloadError, 
     NoURLError, 
@@ -49,6 +50,9 @@ class AgentState(TypedDict):
     payload: AgentRunRequest
     marketingNotes: str
     posts: list[AgentPost]
+    regeneratePost: bool
+    postRegenerationDescription: str
+    postToRegenerate: LLMPostGeneration
 
 def receiverNode(state: AgentState):
     payload = state.get("payload")
@@ -124,7 +128,7 @@ def generatingMarketingPosts(state: AgentState):
             elif answer.actions == "Reject":
                 continue
             elif answer.actions == "Regenerate":
-                continue
+                return {"regeneratePost": True, "postRegenerationDescription": answer.postChangeDescription, "postToRegenerate": postGenerated}
             print(postList)
         return {"posts": postList}
     except GraphInterrupt:
@@ -132,19 +136,76 @@ def generatingMarketingPosts(state: AgentState):
     except Exception as e:
         raise FailedToBuildPosts(f"Failed to build posts: {e}")
 
+def regenratePost(state: AgentState):
+    postToRegenerate = state.get("postToRegenerate")
+    postRegenerationDescription = state.get("postRegenerationDescription")
+    postGenerateSystemPrompt = POST_GENERATION_PROMPT
+    postsList = state.get("posts")
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "{system_instruction}"),
+        ("human", "{user_input}"),
+    ])
+    chain = prompt | structuredPostGenerationLLM
+    postReGenerated = chain.invoke({
+        "system_instruction": postGenerateSystemPrompt,
+        "user_input": f"Here is the input 'Marketing Note': {postToRegenerate.content}, 'postRegenerationDescription': {postRegenerationDescription}" ,
+    })
+    if postReGenerated.actions == "Regenerate":
+        return {"regeneratePost": True, "postRegenerationDescription": answer.postChangeDescription, "postToRegenerate": postReGenerated}
+    elif postReGenerated.actions == "Accept":
+        postsList.append(AgentPost(
+            content=postReGenerated.content,
+            publishDate=postReGenerated.publishDate,
+            platform="LinkedIn",
+            postNumber=len(postsList) + 1,
+        ))
+        return {"posts": postsList, "regeneratePost": False, "postRegenerationDescription": "", "postToRegenerate": None}
+    elif postReGenerated.actions == "Reject":
+        return {"regeneratePost": False, "postRegenerationDescription": "", "postToRegenerate": None}
+
 graph = StateGraph(AgentState)
 
-graph.add_node("receiver", receiverNode)
-graph.add_node("buildingMarketingBrief", buildingMarketingBrief)
-graph.add_node("generatingMarketingPosts", generatingMarketingPosts)
+graph.add_node("Validating_Payload", receiverNode)
+graph.add_node("Building_Marketing_Brief", buildingMarketingBrief)
+graph.add_node("Drafting_And_Reviewing_Posts", generatingMarketingPosts)
+graph.add_node("Regenerating_With_Feedback", regenratePost)
 
+def routingGneratePostsNode(state: AgentState):
+    if state.get("regeneratePost"):
+        return "Regenerating_With_Feedback"
+    else:
+        return END
 
-graph.add_edge(START, "receiver")
-graph.add_edge("receiver", "buildingMarketingBrief")
-graph.add_edge("buildingMarketingBrief", "generatingMarketingPosts")
-graph.add_edge("generatingMarketingPosts", END)
+def routingRegeneratePostNode(state: AgentState):
+    if state.get("regeneratePost"):
+        return "Regenerating_With_Feedback"
+    else:
+        return "Drafting_And_Reviewing_Posts"
+
+graph.add_edge(START, "Validating_Payload")
+graph.add_edge("Validating_Payload", "Building_Marketing_Brief")
+graph.add_edge("Building_Marketing_Brief", "Drafting_And_Reviewing_Posts")
+graph.add_conditional_edges(
+    "Drafting_And_Reviewing_Posts", 
+    routingGneratePostsNode,
+    {
+        "Regenerating_With_Feedback": "Regenerating_With_Feedback",
+        END: END,
+    }
+    )
+
+graph.add_conditional_edges(
+    "Regenerating_With_Feedback",
+    routingRegeneratePostNode,
+    {
+        "Regenerating_With_Feedback": "Regenerating_With_Feedback",
+        "Drafting_And_Reviewing_Posts": "Drafting_And_Reviewing_Posts",
+    }
+)
+
 checkpointer = InMemorySaver()
 graph = graph.compile(checkpointer=checkpointer) 
+
 
 if __name__ == "__main__":
     config = {"configurable": {"thread_id": uuid.uuid4()}}

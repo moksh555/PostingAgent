@@ -54,4 +54,4 @@ class AgentPost(BaseModel):
     content: str
     publishDate: datetime
     platform: str
-    postNumber: int
+    postNumber: int = Field(default=0, description="The number of the post")
