@@ -4,6 +4,7 @@ from pathlib import Path
 
 from typing_extensions import TypedDict  # type: ignore
 
+import psycopg  # type: ignore
 from langchain_core.prompts import ChatPromptTemplate  # type: ignore
 from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
 from langgraph.checkpoint.memory import InMemorySaver   # type: ignore
@@ -12,6 +13,7 @@ from langgraph.errors import GraphInterrupt  # type: ignore
 from langgraph.graph import StateGraph, START, END  # type: ignore
 from langgraph.types import interrupt, RetryPolicy, Command  # type: ignore
 from langgraph.checkpoint.postgres import PostgresSaver # type: ignore
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer # type: ignore
 
 from configurations.config import config
 
@@ -339,7 +341,21 @@ workflow.add_conditional_edges(
 
 
 if __name__ == "__main__":
-    with PostgresSaver.from_conn_string(config.POSTGRES_DB_URI) as checkpointer:
+    serde = JsonPlusSerializer(
+    allowed_msgpack_modules=[
+        ("app.models.AgentModels", "AgentRunRequest"),
+        ("app.models.AgentModels", "LLMPostGeneration"),
+        ("app.models.AgentModels", "AgentPost"),
+    ],
+)
+
+    with psycopg.connect(
+        config.POSTGRES_DB_URI,
+        autocommit=True,
+        prepare_threshold=0,
+        ) as conn:
+        checkpointer = PostgresSaver(conn, serde=serde)
+
         checkpointer.setup() 
 
         graph = workflow.compile(checkpointer=checkpointer)

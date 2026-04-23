@@ -470,6 +470,266 @@ Regen-side mirror:
   zero native deps.
 
 
+## Stage 24 — Consolidating retries on LangGraph's `RetryPolicy`
+
+Stage 21's hand-rolled retry machinery (`failedToBuildPostsatGeneration`,
+`failedToBuildPostatGenerationNumber`, the mirror pair for regeneration,
+plus the router's fail branch) was working but carried real cost:
+
+- Two extra state keys per stage that every success-path return had to
+  reset in lockstep.
+- A router branch whose only job was "bypass the progress check if a
+  stale flag was left dangling".
+- No `sleep` / backoff between attempts — a transient 429 just got hit
+  again immediately.
+
+LangGraph already ships `RetryPolicy`, which retries a node **on
+exception**, not on a flag. Swapped to that:
+
+```python
+workflow.add_node(
+    "Drafting_And_Reviewing_Posts",
+    generatingMarketingPosts,
+    retry_policy=RetryPolicy(
+        max_attempts=3,
+        backoff_factor=3,
+        retry_on=[FailedToBuildPosts],
+    ),
+)
+```
+
+Refactor that followed:
+
+- **Nodes now raise `FailedToBuildPosts`** on invalid LLM output instead
+  of returning a failure flag. Both `generatingMarketingPosts` and
+  `regeneratePost` mirror each other here.
+- **`except FailedToBuildPosts: raise`** added *above* the generic
+  `except Exception` block so retries don't double-wrap into
+  `FailedToBuildPosts("Failed to build posts: Failed to build posts: ...")`.
+  Same `GraphInterrupt` passthrough lesson from Stage 13, different
+  exception.
+- **Dropped** `failedToBuildPostsatGeneration`,
+  `failedToBuildPostatGenerationNumber`, and the regen mirrors from
+  `AgentState` entirely. Router lost its fail branch and went back to a
+  clean three-case decision.
+- `retry_on=[FailedToBuildPosts]` (list of exception classes) — important
+  that this is the *class* that exhausted attempts raise to the caller,
+  not a catch-all; anything else (e.g. a true `psycopg` error during
+  checkpoint write) must not be silently retried.
+
+Gotchas I hit during the swap:
+
+- **`retry_delay=1`** isn't a valid `RetryPolicy` kwarg.
+  `TypeError: RetryPolicy.__new__() got an unexpected keyword argument
+  'retry_delay'`. Use `initial_interval` and/or `backoff_factor`.
+- **Manual `node_attempt` guard cancels `RetryPolicy`.** Tried an early
+  `if runtime.execution_info.node_attempt > 1: raise FailedToBuildPosts`
+  thinking it would work *with* the retry policy. What it actually did
+  was shortcut the second attempt — so `max_attempts=3` behaved like
+  `max_attempts=1`. Either own the retry count yourself (no
+  `RetryPolicy`), or let `RetryPolicy` own it (no manual guard). Not
+  both.
+- **`runtime.execution_info`** is a property, not a method. Earlier code
+  had `runtime.get_execution_info()` which doesn't exist.
+
+
+## Stage 25 — Testing under `pytest`
+
+Wired up real test coverage once the retry story was stable:
+
+- Added `pytest>=9.0.3` to the `dev` dependency group and
+  `[tool.pytest.ini_options]` with `pythonpath = ["."]` and
+  `testpaths = ["tests"]` so imports resolve from `Backend/`.
+- `tests/conftest.py` provides three shared fixtures that every test
+  leans on:
+  - `noWritesToDisk` (autouse) — monkeypatches `writeSummaryToFile` so
+    `buildingMarketingBrief` never touches the filesystem in tests.
+  - `makeFakeLLM` — returns a factory that builds a `RunnableLambda`
+    which pops responses off a queue and, when the queued value is an
+    `Exception`, raises it. Lets a single test simulate "LLM returns
+    valid output on attempt 3" without touching the Gemini API.
+  - `newThreadConfig` — a fresh `{"configurable": {"thread_id": uuid}}`
+    per test so threads never collide in the checkpointer.
+- `os.environ.setdefault("GEMINI_API_KEY", "test-key-unused-because-we-mock")`
+  at the top of `conftest.py` — `ChatGoogleGenerativeAI(...)` is
+  instantiated at module import time in `agentGraph.py` and would
+  otherwise fail during collection on a clean machine.
+
+Test file `tests/test_agentGraph.py` covers ~18 cases across three
+levels:
+
+1. **Unit tests for pure functions** — `receiverNode`,
+   `routingGneratePostsNode`, `routingReGneratePostsNode`. Fast, no LLM
+   mocking needed.
+2. **Single-node LLM tests** — `buildingMarketingBrief` (happy path +
+   invalid-response raises), produce-step of
+   `generatingMarketingPosts`, produce-step of `regeneratePost`. Uses
+   `makeFakeLLM` to pin the response.
+3. **End-to-end flow tests** — full run through `graph.invoke(...)` +
+   `Command(resume=...)` for:
+   - Happy path: 1-post Accept.
+   - Regenerate flow: draft → Regenerate → rewrite → Accept.
+   - Reject flow: draft → Reject → terminates with empty posts list.
+   - **Replay safety** (`test_cacheDraftPreventsDoubleLLMCallOnResume`):
+     asserts the LLM was called exactly once despite the node being
+     replayed on resume. This is the regression test for Stage 19.
+4. `InMemorySaver` inside tests — no Postgres required for CI. The
+   module's own `PostgresSaver` lives under `if __name__ == "__main__":`
+   precisely so tests can import `workflow` without a live DB.
+
+One shell quirk worth recording: zsh swallows `#` as a comment when
+typing `pytest tests/test_agentGraph.py # just the flow tests` at the
+prompt and interprets the trailing `#` as a literal path. Either drop
+the inline comment or `setopt interactive_comments` in `~/.zshrc`.
+
+
+## Stage 26 — PostgreSQL checkpointer via Neon
+
+`InMemorySaver` was fine for local dev but obviously can't survive a
+process restart. Switched persistence to **Neon** (managed Postgres)
+via LangGraph's `PostgresSaver`.
+
+- Added `langgraph-checkpoint-postgres` — separate package from
+  `langgraph` itself, pulls in `psycopg` and `psycopg-pool`.
+- Added `POSTGRES_DB_URI` to the Pydantic-Settings config.
+- Neon hands you a URI with `?sslmode=require` already appended; use
+  the **direct** connection string (not the pooler) for `setup()` since
+  it issues DDL.
+
+Several false starts here that are worth recording, because the
+documentation makes them easy to make:
+
+1. **`PostgresStore` ≠ checkpointer.** First attempt was
+   `checkpointer = PostgresStore(URI)`. `PostgresStore` is LangGraph's
+   long-term *memory store* (for persistent key-value memory across
+   threads), not a `BaseCheckpointSaver`. Wrong class, also not
+   imported — `NameError` at module load.
+2. **`PostgresSaver(URI)` — wrong constructor.** `PostgresSaver.__init__`
+   requires a live `psycopg` connection (or pool) as its first
+   positional arg. It does not parse URIs.
+3. **`PostgresSaver.from_conn_string(URI)` without a `with`.** This
+   classmethod is a `@contextmanager`. Assigning its result to a
+   variable gives you a `_GeneratorContextManager`, not a saver.
+   `checkpointer.setup()` on it raises `AttributeError`.
+4. **`with … as checkpointer:` at module scope.** Correct shape, but
+   the connection closes the instant the `with` block exits — which
+   means any `graph.invoke(...)` *after* the block dies with
+   `InterfaceError: the connection is closed`. Fine for a one-shot
+   script if *all* usage lives inside the block; wrong for a long-lived
+   FastAPI process.
+5. **`from_conn_string(URI, serde=serde)`** doesn't accept a `serde`
+   kwarg — `from_conn_string` always constructs the saver as
+   `cls(conn)` internally, with no hook for a custom serializer.
+
+Shapes that actually work:
+
+- **One-shot script (what `__main__` uses today)**: stay inside the
+  `with` block.
+
+  ```python
+  with PostgresSaver.from_conn_string(config.POSTGRES_DB_URI) as checkpointer:
+      checkpointer.setup()
+      graph = workflow.compile(checkpointer=checkpointer)
+      # every graph.stream / graph.invoke call goes HERE
+  ```
+
+- **Long-running service (FastAPI, needs custom serde, or both)**: open
+  the psycopg connection yourself and pass it to `PostgresSaver`.
+
+  ```python
+  import psycopg
+  with psycopg.Connection.connect(
+      config.POSTGRES_DB_URI,
+      autocommit=True,
+      prepare_threshold=0,
+  ) as conn:
+      checkpointer = PostgresSaver(conn, serde=serde)
+      checkpointer.setup()
+      graph = workflow.compile(checkpointer=checkpointer)
+  ```
+
+  `autocommit=True` and `prepare_threshold=0` are required — without
+  them LangGraph's checkpoint writes occasionally hit
+  `InFailedSqlTransaction`.
+
+Also kept `setup()` as an idempotent no-op on subsequent runs — it
+creates `checkpoints`, `checkpoint_writes`, `checkpoint_blobs` on first
+invocation and does nothing thereafter.
+
+
+## Stage 27 — Thread inspection utility
+
+Added `tests/inspectThread.py`: given a `thread_id` from Neon, prints
+`posts`, `next`, and the full `posts` JSON dump.
+
+```bash
+uv run python tests/inspectThread.py <thread_id>
+```
+
+- Opens its own short-lived `PostgresSaver.from_conn_string(...)` and
+  compiles the workflow with that checkpointer (doesn't need `setup()`
+  — reads only).
+- Uses `graph.get_state({"configurable": {"thread_id": threadId}})` —
+  the blessed way to read a snapshot. Returns a `StateSnapshot` whose
+  `.values` is the last persisted `AgentState` dict.
+- `snapshot.next` tells you whether the thread is mid-interrupt
+  (non-empty) or finished (empty tuple).
+- Prepends `Backend/` to `sys.path` at the top of the script so
+  `python tests/inspectThread.py` works directly, not just
+  `python -m tests.inspectThread`. `pyproject.toml`'s
+  `pythonpath = ["."]` applies to pytest only, not plain `python`.
+
+Useful when the graph runs in a server and I need to inspect what a
+given run produced without a UI. Also doubles as a debugging tool
+during the serializer-allowlist work in Stage 28.
+
+
+## Stage 28 — Checkpoint serializer allowlist
+
+Running `inspectThread.py` against a real Neon thread printed a
+warning for every Pydantic model in state:
+
+```
+Deserializing unregistered type app.models.AgentModels.AgentPost from
+checkpoint. This will be blocked in a future version. Set
+LANGGRAPH_STRICT_MSGPACK=true to block now, or add to
+allowed_msgpack_modules to allow explicitly:
+[('app.models.AgentModels', 'AgentPost')]
+```
+
+What's going on: LangGraph's default serde is
+`JsonPlusSerializer` on top of msgpack. When it encounters a type it
+doesn't recognise (i.e. our Pydantic models), it serialises a
+`(module, class)` reference. On read-back it normally `import`s that
+path to reconstruct the object — a real RCE surface if a checkpoint
+row is ever tampered with. Future LangGraph releases will **block**
+deserialisation of unknown types by default; right now they only warn.
+
+Two live options:
+
+- **(A) Store dicts in state, not Pydantic models.** Call
+  `model_dump()` before handing an object to state, validate back with
+  `Model.model_validate(...)` at read sites. Zero warnings, no coupling
+  of checkpoints to Python module paths, survives renames and moves of
+  the Pydantic classes.
+- **(B) Register the types with the serializer.** Pass a custom
+  `JsonPlusSerializer(allowed_msgpack_modules=[...])` to the saver.
+  Keeps the typed objects in state but binds every existing checkpoint
+  row to the current module + class names — rename `AgentModels.py`
+  or a class and old threads stop deserialising.
+
+For a project that's still small and evolving, **Option A is the safer
+default**. Option B is staged in the `__main__` script for
+experimentation but the plan is to migrate state to plain dicts
+(`payload`, `posts`, `cacheDraft`, `postToRegenerate`) in a follow-up
+pass.
+
+Integration note specific to Option B: `PostgresSaver.from_conn_string`
+won't forward a `serde` kwarg (Stage 26 bullet 5), so Option B
+requires the manual `psycopg.Connection.connect(...)` pattern to get
+`serde=` into the `PostgresSaver` constructor.
+
+
 ## What the system does end-to-end today
 
 1. Client `POST /api/v1/runAgent` with `{url, numberOfPosts, startDate}`.
@@ -504,9 +764,16 @@ Regen-side mirror:
    user feedback. Accept / Reject → back to
    `Drafting_And_Reviewing_Posts`; Regenerate self-loops for another
    rewrite.
-9. Consecutive LLM failures are retried up to 3 times per stage; beyond
-   that the graph terminates cleanly at `END`.
-10. Returns `posts: list[AgentPost]`.
+9. Consecutive LLM failures on produce-steps raise `FailedToBuildPosts`;
+   LangGraph's `RetryPolicy(max_attempts=3, backoff_factor=3,
+   retry_on=[FailedToBuildPosts])` retries the node. If all three
+   attempts exhaust, the exception bubbles up to the caller rather than
+   silently landing an empty slot.
+10. Every checkpoint is persisted to **Neon Postgres** via
+    `PostgresSaver`, so a run paused at `interrupt(...)` survives a
+    process restart and can be resumed hours later using the same
+    `thread_id`.
+11. Returns `posts: list[AgentPost]`.
 
 
 ## Lessons worth keeping
@@ -549,3 +816,29 @@ Regen-side mirror:
   schema has 2, the schema wins and the prompt's instructions get ignored.
 - **`python -m` is the right way to run a module** inside a package —
   don't run the file directly.
+- **Exception-driven retries beat flag-driven retries.** If the
+  framework ships a retry primitive (`RetryPolicy`), use it: raise a
+  typed exception on failure, let the policy own `max_attempts` and
+  backoff, and delete the mirroring state keys. Don't mix the two —
+  manual `node_attempt` guards silently cancel out `RetryPolicy`.
+- **Checkpointer lifecycle is the whole game with `PostgresSaver`.**
+  `from_conn_string` is a context manager that closes on `__exit__`;
+  `PostgresSaver(conn, serde=...)` wants a connection you own.
+  Anything that mixes the two (`postgres = PostgresSaver(serde=...)`
+  then `postgres.from_conn_string(...)`) is wrong in a subtle way
+  because `from_conn_string` is a classmethod and discards the
+  instance. Pick the shape that matches the process lifetime.
+- **Pydantic models in LangGraph state are a forward-compat footgun.**
+  Default serde warns today, will block tomorrow. Plain dicts in
+  state + `Model.model_validate(...)` at read sites is the lower-risk
+  path unless you deliberately want the registry coupling.
+- **Neon requires SSL and autocommit.** `?sslmode=require` in the URI
+  plus `autocommit=True, prepare_threshold=0` when constructing the
+  connection. Without `autocommit`, checkpoint writes sometimes land
+  in `InFailedSqlTransaction`.
+- **Tests must not need the database.** Keeping
+  `PostgresSaver` construction under `if __name__ == "__main__":` (or
+  behind a `buildGraph(checkpointer)` factory) lets
+  `tests/conftest.py` import the workflow without a live Neon
+  instance. The corollary: `graph` should not be a module-level
+  Postgres-backed global, ever.

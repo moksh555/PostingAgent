@@ -29,6 +29,6 @@ This will be launched first as an **MVP**. I will be onboarding a few of my frie
 - **Agent Framework:** LangChain
 - **Orchestration:** LangGraph
 - **Backend / API:** FastAPI
-- **Database:** DynamoDB
+- **Database:** NeonDB(for persistance)
 - **LLM:** Gemini models
 - **Scheduling & Automation:** AWS Lambda, Amazon EventBridge, AWS EC2
