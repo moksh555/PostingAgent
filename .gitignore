@@ -95,3 +95,4 @@ logs/
 # Remove this block if you want to commit sample runs.
 # ---------------------------------------------------------------------------
 testSummary/
+tests/

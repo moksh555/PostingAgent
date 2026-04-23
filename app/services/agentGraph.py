@@ -1,3 +1,5 @@
+from datetime import datetime
+import uuid
 from pathlib import Path
 
 from typing_extensions import TypedDict  # type: ignore
@@ -8,7 +10,8 @@ from langgraph.checkpoint.memory import InMemorySaver   # type: ignore
 from langgraph.runtime import Runtime  # type: ignore
 from langgraph.errors import GraphInterrupt  # type: ignore
 from langgraph.graph import StateGraph, START, END  # type: ignore
-from langgraph.types import interrupt, RetryPolicy  # type: ignore
+from langgraph.types import interrupt, RetryPolicy, Command  # type: ignore
+from langgraph.checkpoint.postgres import PostgresSaver # type: ignore
 
 from configurations.config import config
 
@@ -265,17 +268,17 @@ def regeneratePost(state: AgentState, runtime: Runtime):
         raise FailedToBuildPosts(f"Failed to regenerate post: {e}") from e
 
 
-graph = StateGraph(AgentState)
+workflow = StateGraph(AgentState)
 
-graph.add_node(
+workflow.add_node(
     "Validating_Payload", 
     receiverNode
     )
-graph.add_node(
+workflow.add_node(
     "Building_Marketing_Brief", 
     buildingMarketingBrief
     )
-graph.add_node(
+workflow.add_node(
     "Drafting_And_Reviewing_Posts", 
     generatingMarketingPosts,
     retry_policy=RetryPolicy(
@@ -284,7 +287,7 @@ graph.add_node(
         retry_on = [FailedToBuildPosts],
     )
     )
-graph.add_node(
+workflow.add_node(
     "Regenerating_With_Feedback", 
     regeneratePost,
     retry_policy=RetryPolicy(
@@ -309,11 +312,11 @@ def routingReGneratePostsNode(state: AgentState):
     return "Regenerating_With_Feedback"
 
 
-graph.add_edge(START, "Validating_Payload")
-graph.add_edge("Validating_Payload", "Building_Marketing_Brief")
-graph.add_edge("Building_Marketing_Brief", "Drafting_And_Reviewing_Posts")
+workflow.add_edge(START, "Validating_Payload")
+workflow.add_edge("Validating_Payload", "Building_Marketing_Brief")
+workflow.add_edge("Building_Marketing_Brief", "Drafting_And_Reviewing_Posts")
 
-graph.add_conditional_edges(
+workflow.add_conditional_edges(
     "Drafting_And_Reviewing_Posts",
     routingGneratePostsNode,
     {
@@ -323,7 +326,7 @@ graph.add_conditional_edges(
     },
 )
 
-graph.add_conditional_edges(
+workflow.add_conditional_edges(
     "Regenerating_With_Feedback",
     routingReGneratePostsNode,
     {
@@ -333,18 +336,21 @@ graph.add_conditional_edges(
     },
 )
 
-checkpointer = InMemorySaver()
-graph = graph.compile(checkpointer=checkpointer)
 
-# if __name__ == "__main__":
-#     config = {"configurable": {"thread_id": uuid.uuid4()}}
-#     for chunk in graph.stream(
-#         {"payload": AgentRunRequest(url="https://code.claude.com/docs/en/agent-sdk/overview", numberOfPosts=1, startDate=datetime.now())},
-#         config=config,
-#         version="v2"):
-#         if chunk["type"] == "updates":
-#             for node_name, state in chunk["data"].items():
-#                 print(f"Node {node_name}")
-#                 if node_name == "__interrupt__":
-#                     answer = AgentPostGenerationInterrupt(actions="Accept")
-#                     graph.invoke(Command(resume=answer), config=config, version="v2")
+
+if __name__ == "__main__":
+    with PostgresSaver.from_conn_string(config.POSTGRES_DB_URI) as checkpointer:
+        checkpointer.setup() 
+
+        graph = workflow.compile(checkpointer=checkpointer)
+        configuration = {"configurable": {"thread_id": str(uuid.uuid4())}}
+        for chunk in graph.stream(
+            {"payload": AgentRunRequest(url="https://code.claude.com/docs/en/agent-sdk/overview", numberOfPosts=1, startDate=datetime.now())},
+            config=configuration,
+            version="v2"):
+            if chunk["type"] == "updates":
+                for node_name, state in chunk["data"].items():
+                    print(f"Node {node_name}")
+                    if node_name == "__interrupt__":
+                        answer = AgentPostGenerationInterrupt(actions="Accept")
+                        graph.invoke(Command(resume=answer), config=configuration, version="v2")

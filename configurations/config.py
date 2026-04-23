@@ -8,6 +8,7 @@ class Config(BaseSettings):
     
     PORT: int
     GEMINI_API_KEY: str
+    POSTGRES_DB_URI: str
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE_PATH,
