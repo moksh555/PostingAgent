@@ -730,6 +730,133 @@ requires the manual `psycopg.Connection.connect(...)` pattern to get
 `serde=` into the `PostgresSaver` constructor.
 
 
+## Stage 29 — Service layer + client simulator
+
+With the checkpointer working, the next layer up was the thing an HTTP
+handler would actually call. Two methods, not one:
+
+- `AgentServices.startRun(payload)` — mints a `thread_id`, compiles the
+  graph against a fresh `PostgreSQLRepository()`, streams the run until
+  it pauses on `interrupt(...)` or finishes, and returns a client view
+  of the state.
+- `AgentServices.resumeRun(thread_id, decision)` — same shape, but
+  feeds `Command(resume=decision)` into `graph.stream(...)` instead of
+  an initial payload.
+
+Stream loop uses `stream_mode="updates"` with `version="v2"` and the
+`chunk["type"] == "updates"` pattern — incremental node updates let me
+log per-node progress for every run without blocking on a final
+`invoke`. The return value is built by a small `_buildClientView(graph,
+threadId, config)` helper that reads `graph.get_state(config)` and
+folds `snapshot.next` + `values["cacheDraft"]` + `values["posts"]`
+into one of two shapes:
+
+- `{state: "awaiting_review", draft: {...}, posts: [...]}` when the
+  thread is paused at an interrupt.
+- `{state: "completed", draft: None, posts: [...]}` when the thread
+  has reached `END`.
+
+Same shape for `startRun` and `resumeRun` so the frontend doesn't need
+two parsers. `posts` is always `[AgentPost.model_dump()]` so HTTP
+serialisation is trivial.
+
+HTTP wiring lives in `app/api/version1/runAgent.py`:
+
+- `POST /runAgent` → `service.startRun(payload)`.
+- `POST /runAgent/{thread_id}/decide` → `service.resumeRun(thread_id,
+  decision)`.
+
+`thread_id` lives in the path of the resume endpoint, not in a cookie
+or header — a run is idempotent on its `thread_id` and the URL should
+say so. (Open question still: let the frontend mint the UUID and send
+it on `startRun`? Recommended pattern, not yet adopted.)
+
+To drive this without a UI, added `tests/simulateRun.py`:
+
+```bash
+uv run python tests/simulateRun.py --url <url> --posts 3            # interactive
+uv run python tests/simulateRun.py --url <url> --posts 3 --auto-accept
+```
+
+The simulator is a CLI that impersonates a browser: calls `startRun`,
+prints each draft, prompts `A / R / G` from stdin, builds the
+appropriate `AgentPostGenerationInterrupt`, calls `resumeRun`, loops
+until `state == "completed"`. Useful as both a demo and a smoke test
+against live Gemini + live Neon. `--auto-accept` mode lets it run
+unattended for end-to-end regression checks.
+
+
+## Stage 30 — Prompt ↔ schema mismatch caught by the simulator
+
+First run through the simulator uncovered a bug that all the unit
+tests missed (because they mock the LLM): for `numberOfPosts=3`,
+post 1 came back as the string `"A single parseable JSON array of
+objects representing the social media posts."` — literally the model
+regurgitating a meta-description of what its output should be.
+Subsequent drafts (regenerations, acceptances for later slots) worked
+fine.
+
+Root cause: `LLMPostGeneration` schema has exactly two fields —
+
+```python
+class LLMPostGeneration(BaseModel):
+    content: str
+    publishDate: datetime
+```
+
+…but `POST_GENERATION_PROMPT`'s `## Output` section asked for
+**eight** (`angle`, `hook`, `body`, `cta`, `hashtags`, `publishDate`,
+`platform`, `fullPost`) and referred to "the posts" (plural) while
+the schema is a single object. `with_structured_output(...)` forces
+output to match the schema, so every other field the prompt mentioned
+was silently dropped, and since neither `content` nor `publishDate`
+had a `Field(description=...)`, the model had no anchor for what to
+put in `content`. For the first call of the run it improvised a
+description of the schema; later calls stabilised on "dump the whole
+hook+body+CTA+hashtags into `content` as one giant string".
+
+This is literally the lesson already in this file ("Prompt ↔ schema
+must agree") — the prompt just hadn't been updated when the schema
+was shrunk.
+
+Fixes, in order of impact:
+
+1. **Descriptions on the schema fields** — `Field(..., description=
+   "The full post as one string, with real newlines between
+   paragraphs...")` on `content`, same for `publishDate`.
+   `with_structured_output` passes these to the model. When the prompt
+   contradicts the schema, the descriptions are what the model falls
+   back to.
+2. **Rewrite the prompt's `## Output` section** to describe the
+   actual two-field schema (single object, `content` as assembled
+   string, `publishDate` as ISO-8601). Drop the 8-field checklist
+   entirely. Same edit in `postRegenerationPrompt.py` if it carries
+   the same shape.
+3. **Normalise literal `\n` in the node, defence-in-depth.** Same fix
+   Stage 10 already applied to the marketing brief — Gemini
+   double-escapes and emits the two characters `\` + `n` instead of a
+   real newline. Post content was missing this step, so drafts
+   printed as one giant line with visible `\n\n` separators. Two
+   `.replace("\\n", "\n").replace("\\t", "\t")` calls on
+   `postGenerated.content` right after the LLM call.
+4. **Min-length guard.** Current validation only checks
+   `content in ("", None)`. A one-liner schema description slipped
+   through because it was a non-empty string. A
+   `len(content.strip()) < 120` floor is a cheap sanity filter and
+   activates `RetryPolicy` on schema-leak garbage.
+
+Non-bug worth writing down: `numberOfPosts=3` → `2 post(s) accepted`
+is **correct** per Stage 20 semantics. Reject = skip this slot; the
+final list is shorter than `numberOfPosts` by whatever the user
+rejected. If the UX ever wants "Reject retries the same slot", it's
+a router change (don't increment `currentLoopStartNumber` on Reject).
+Current call: keep Reject = skip, Regenerate-with-feedback is the
+useful retry path.
+
+Also a meta-lesson: unit tests with mocked LLMs would not catch this.
+`simulateRun.py` against real Gemini is a necessary complement.
+
+
 ## What the system does end-to-end today
 
 1. Client `POST /api/v1/runAgent` with `{url, numberOfPosts, startDate}`.
@@ -842,3 +969,26 @@ requires the manual `psycopg.Connection.connect(...)` pattern to get
   `tests/conftest.py` import the workflow without a live Neon
   instance. The corollary: `graph` should not be a module-level
   Postgres-backed global, ever.
+- **`Field(description=...)` is the schema's last word.** When a
+  prompt and a structured-output schema disagree, the schema wins and
+  the model reads the field descriptions for intent. Un-described
+  fields give the model nothing to hold onto, and it will hallucinate
+  schema-shaped garbage (e.g. emitting the schema description as the
+  field value). Every field that isn't obvious from its name needs a
+  description.
+- **Mocked-LLM tests cannot catch prompt regressions.** They validate
+  graph topology and node contracts, not model behaviour. A real-LLM
+  smoke script (`simulateRun.py`) on every prompt change is cheap
+  insurance for the class of bugs that only appear when the actual
+  model has to make a decision.
+- **Stream with `stream_mode="updates"` + `version="v2"`.**
+  Incremental per-node deltas, not final state. Pairs with
+  `chunk["type"] == "updates"` parsing. `.invoke(...)` blocks on the
+  whole run; `stream(...)` lets the service layer log each node as it
+  runs and exit cleanly on the first `interrupt(...)`.
+- **One client-view shape for start and resume.** The frontend should
+  not need to know whether this is the first call or the fifth.
+  `{state, draft, posts}` derived from `graph.get_state(config)` is
+  the same whether the thread just paused for the first time or
+  resumed from `Command(resume=...)`. Build it in one helper
+  (`_buildClientView`) and call it from both service methods.
