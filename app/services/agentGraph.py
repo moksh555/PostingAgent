@@ -130,19 +130,48 @@ def generatingMarketingPosts(state: AgentState, runtime: Runtime):
 
                 chain = prompt | structuredPostGenerationLLM
 
+                postIndex = currentLoopStartNumber + 1
+                previousPostsSummary = "\n".join(
+                    f"- Post {p.postNumber}: {p.content[:140]}..."
+                    for p in postList
+                ) or "(none yet — this is the first post in the campaign)"
+
+                userInput = (
+                    f"Marketing Note:\n{marketingNotes}\n\n"
+                    f"This is post {postIndex} of {numberOfPosts} in the "
+                    f"campaign.\n"
+                    f"Campaign start date: {startDate}\n"
+                    f"Platform: LinkedIn\n"
+                    f"Source URL: {payload.url}\n"
+                    f"Publish date for THIS post: use the campaign start "
+                    f"date plus the appropriate offset per the scheduling "
+                    f"rules in the system prompt, given this is post "
+                    f"{postIndex}.\n\n"
+                    f"Posts already accepted in this campaign (do not repeat "
+                    f"their angle or hook):\n{previousPostsSummary}\n\n"
+                    f"Generate exactly ONE post for slot {postIndex}."
+                )
+
                 postGenerated = chain.invoke({
                     "system_instruction": postGenerateSystemPrompt,
-                    "user_input": f"Here is the input 'Marketing Note': {marketingNotes}, 'numberOfPosts': {numberOfPosts}, 'startDate': {startDate}, 'platform': 'LinkedIn', 'url': {payload.url}",
+                    "user_input": userInput,
                 })
 
+                if postGenerated.content:
+                    postGenerated.content = (
+                        postGenerated.content
+                        .replace("\\n", "\n")
+                        .replace("\\t", "\t")
+                    )
+
                 if (
-                    postGenerated.content is None
-                    or postGenerated.content == ""
-                    or postGenerated.publishDate is None
-                    or postGenerated.publishDate == ""
+                    not postGenerated.content
+                    or len(postGenerated.content.strip()) < 120
+                    or not postGenerated.publishDate
                 ):
                     raise FailedToBuildPosts(
-                        f"Failed to generate post: Invalid response from model"
+                        "Failed to generate post: invalid / too-short response "
+                        "from model"
                     )
 
                 return {
@@ -213,15 +242,22 @@ def regeneratePost(state: AgentState, runtime: Runtime):
                 "user_input": f"Here is the input 'postToRegenerate': {postToRegenerate.content}, 'postRegenerationDescription': {postRegenerationDescription}, 'Notes': {marketingNotes}, url: {payload.url}, publishDate: {postToRegenerate.publishDate}",
             })
 
+            if postReGenerated.content:
+                postReGenerated.content = (
+                    postReGenerated.content
+                    .replace("\\n", "\n")
+                    .replace("\\t", "\t")
+                )
+
             if (
-                postReGenerated.content is None
-                or postReGenerated.content == ""
-                or postReGenerated.publishDate is None
-                or postReGenerated.publishDate == ""
+                not postReGenerated.content
+                or len(postReGenerated.content.strip()) < 120
+                or not postReGenerated.publishDate
             ):
                 raise FailedToBuildPosts(
-                    f"Failed to regenerate post: Invalid response from model"
-                    )
+                    "Failed to regenerate post: invalid / too-short response "
+                    "from model"
+                )
 
             return {
                 "cacheDraft": postReGenerated,

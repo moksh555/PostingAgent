@@ -42,8 +42,8 @@ class AgentSummary(BaseModel):
     )
 
 class LLMPostGeneration(BaseModel):
-    content: str 
-    publishDate: datetime
+    content: str = Field(..., description="The full content of the post")
+    publishDate: datetime = Field(..., description="The date and time the post will be published")
 
 class AgentPostGenerationInterrupt(BaseModel):
     actions: str = Field(...,description="The actions to takeon the post chose by user",

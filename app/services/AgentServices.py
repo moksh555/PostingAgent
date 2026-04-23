@@ -1,7 +1,7 @@
 import logging
 import uuid
 from typing import Any
-
+import json 
 from langgraph.types import Command  # type: ignore
 
 from app.models.AgentModels import (
@@ -39,7 +39,7 @@ class AgentServices:
         ):
             if chunk["type"] == "updates":
                 for node_name, _state in chunk["data"].items():
-                    logger.info("thread=%s node=%s", threadId, node_name)
+                    yield json.dumps({"state": "updates", "node": node_name})
 
         return self._buildClientView(graph, threadId, config)
 
@@ -60,30 +60,33 @@ class AgentServices:
         ):
             if chunk["type"] == "updates":
                 for node_name, _state in chunk["data"].items():
-                    logger.info("thread=%s resume node=%s", threadId, node_name)
+                    yield json.dumps({"state": "updates", "node": node_name})
 
         return self._buildClientView(graph, threadId, config)
 
-    def _buildClientView(self, graph, threadId: str, config: dict) -> dict[str, Any]:
+    def _buildClientView(self, graph, threadId: str, config: dict) -> str:
         snapshot = graph.get_state(config)
         values = snapshot.values or {}
-        posts = [p.model_dump() for p in (values.get("posts") or [])]
+        posts = [p.model_dump(mode="json") for p in (values.get("posts") or [])]
 
         if snapshot.next:
             cacheDraft = values.get("cacheDraft")
-            return {
+            draft = None
+            if cacheDraft:
+                draft = {
+                    "content": cacheDraft.content,
+                    "publishDate": cacheDraft.publishDate.isoformat(),
+                }
+            return json.dumps({
                 "threadId": threadId,
                 "state": "awaiting_review",
-                "draft": {
-                    "content": cacheDraft.content,
-                    "publishDate": cacheDraft.publishDate,
-                } if cacheDraft else None,
+                "draft": draft,
                 "posts": posts,
-            }
+            })
 
-        return {
+        return json.dumps({
             "threadId": threadId,
             "state": "completed",
             "draft": None,
             "posts": posts,
-        }
+        })
