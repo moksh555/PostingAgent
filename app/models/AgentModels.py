@@ -48,10 +48,10 @@ class LLMPostGeneration(BaseModel):
 class AgentPostGenerationInterrupt(BaseModel):
     actions: str = Field(...,description="The actions to takeon the post chose by user",
     )
-    postChangeDescription: str = Field(default="", description="The user description of post change if they want to regenerate the post")
+    postChangeDescription: str = Field(default="", description="The user description of post change if they want to regenerate the post or delte the post for some reason")
 
 class AgentPost(BaseModel):
-    content: str
-    publishDate: datetime
-    platform: str
+    content: str = Field(..., description="The content of the post")
+    publishDate: datetime = Field(..., description="The date and time the post will be published")
+    platform: str = Field(..., description="The platform the post will be published to")
     postNumber: int = Field(default=0, description="The number of the post")

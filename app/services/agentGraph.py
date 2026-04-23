@@ -4,7 +4,6 @@ from pathlib import Path
 
 from typing_extensions import TypedDict  # type: ignore
 
-import psycopg  # type: ignore
 from langchain_core.prompts import ChatPromptTemplate  # type: ignore
 from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
 from langgraph.checkpoint.memory import InMemorySaver   # type: ignore
@@ -12,8 +11,6 @@ from langgraph.runtime import Runtime  # type: ignore
 from langgraph.errors import GraphInterrupt  # type: ignore
 from langgraph.graph import StateGraph, START, END  # type: ignore
 from langgraph.types import interrupt, RetryPolicy, Command  # type: ignore
-from langgraph.checkpoint.postgres import PostgresSaver # type: ignore
-from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer # type: ignore
 
 from configurations.config import config
 
@@ -68,6 +65,8 @@ class AgentState(TypedDict):
     postToRegenerate: LLMPostGeneration
     currentLoopStartNumber: int
     cacheDraft: LLMPostGeneration
+    # TODO: # this is somehting I am planning to add later on as a feature, this will add more context for the user to generate next posts 
+    # reasonForDelteion: list[str] 
 
 
 def receiverNode(state: AgentState):
@@ -340,33 +339,4 @@ workflow.add_conditional_edges(
 
 
 
-if __name__ == "__main__":
-    serde = JsonPlusSerializer(
-    allowed_msgpack_modules=[
-        ("app.models.AgentModels", "AgentRunRequest"),
-        ("app.models.AgentModels", "LLMPostGeneration"),
-        ("app.models.AgentModels", "AgentPost"),
-    ],
-)
 
-    with psycopg.connect(
-        config.POSTGRES_DB_URI,
-        autocommit=True,
-        prepare_threshold=0,
-        ) as conn:
-        checkpointer = PostgresSaver(conn, serde=serde)
-
-        checkpointer.setup() 
-
-        graph = workflow.compile(checkpointer=checkpointer)
-        configuration = {"configurable": {"thread_id": str(uuid.uuid4())}}
-        for chunk in graph.stream(
-            {"payload": AgentRunRequest(url="https://code.claude.com/docs/en/agent-sdk/overview", numberOfPosts=1, startDate=datetime.now())},
-            config=configuration,
-            version="v2"):
-            if chunk["type"] == "updates":
-                for node_name, state in chunk["data"].items():
-                    print(f"Node {node_name}")
-                    if node_name == "__interrupt__":
-                        answer = AgentPostGenerationInterrupt(actions="Accept")
-                        graph.invoke(Command(resume=answer), config=configuration, version="v2")

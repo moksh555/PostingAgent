@@ -25,8 +25,7 @@ async def run_agent(payload: AgentRunRequest):
     """
     try:
         return agent_services.runAgent(
-            numberOfPosts=payload.numberOfPosts,
-            startDate=payload.startDate,
+            payload=payload,
         )
     except ValidationError as e:
         raise HTTPException(
