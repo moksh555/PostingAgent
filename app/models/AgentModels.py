@@ -4,7 +4,7 @@ from datetime import datetime
 
 class AgentRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
+    userId: str = Field(..., description="The user ID")
     url: str = Field(
         ...,
         pattern=r"^https?://[^\s/$.?#].[^\s]*$",

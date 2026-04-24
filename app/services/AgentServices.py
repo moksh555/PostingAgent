@@ -1,22 +1,32 @@
-import logging
 import uuid
 from typing import Any
 import json
 from langgraph.types import Command  # type: ignore
-
 from app.models.AgentModels import (
     AgentPostGenerationInterrupt,
     AgentRunRequest,
 )
 from app.models.healthCheckModel import HealthCheckModel
-from app.repository.postgreSQL import PostgreSQLRepository
-
-logger = logging.getLogger(__name__)
-
+from app.repository.postgreSQL import PostgreSQLRepository # type: ignore
+from langgraph.checkpoint.postgres import PostgresSaver # type: ignore
+from app.services.agentGraph import workflow
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer # type: ignore
 
 class AgentServices:
+    SERDE = JsonPlusSerializer(
+        allowed_msgpack_modules=[
+            ("app.models.AgentModels", "AgentRunRequest"),
+            ("app.models.AgentModels", "AgentSummary"),
+            ("app.models.AgentModels", "LLMPostGeneration"),
+            ("app.models.AgentModels", "AgentPost"),
+        ],
+    )
     def __init__(self) -> None:
-        pass
+        postgres = PostgreSQLRepository()
+        self.conn = postgres.conn
+        self.checkpointer = PostgresSaver(self.conn, serde=self.SERDE)
+        postgres.setup(self.checkpointer)
+        self.graph = workflow.compile(checkpointer=self.checkpointer)
 
     def get_health_check(self) -> HealthCheckModel:
         return HealthCheckModel(
@@ -28,9 +38,7 @@ class AgentServices:
         threadId = str(uuid.uuid4())
         config = {"configurable": {"thread_id": threadId}}
 
-        graph = PostgreSQLRepository().get_graph()
-
-        for chunk in graph.stream(
+        for chunk in self.graph.stream(
             {"payload": payload},
             config=config,
             stream_mode="updates",
@@ -40,7 +48,7 @@ class AgentServices:
                 for node_name, _state in chunk["data"].items():
                     yield json.dumps({"state": "updates", "node": node_name})
 
-        return self._buildClientView(graph, threadId, config)
+        return self._buildClientView(self.graph, threadId, config)
 
     def resumeRun(
         self,
@@ -49,9 +57,7 @@ class AgentServices:
     ) -> dict[str, Any]:
         config = {"configurable": {"thread_id": threadId}}
 
-        graph = PostgreSQLRepository().get_graph()
-
-        for chunk in graph.stream(
+        for chunk in self.graph.stream(
             Command(resume=decision),
             config=config,
             stream_mode="updates",
@@ -61,7 +67,7 @@ class AgentServices:
                 for node_name, _state in chunk["data"].items():
                     yield json.dumps({"state": "updates", "node": node_name})
 
-        return self._buildClientView(graph, threadId, config)
+        return self._buildClientView(self.graph, threadId, config)
 
     def _buildClientView(self, graph, threadId: str, config: dict) -> str:
         snapshot = graph.get_state(config)
@@ -93,3 +99,6 @@ class AgentServices:
                 "posts": posts,
             }
         )
+
+
+

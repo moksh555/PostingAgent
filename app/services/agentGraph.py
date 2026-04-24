@@ -1,5 +1,4 @@
 from datetime import datetime
-import uuid
 from pathlib import Path
 
 from typing_extensions import TypedDict  # type: ignore
@@ -10,7 +9,7 @@ from langgraph.checkpoint.memory import InMemorySaver  # type: ignore
 from langgraph.runtime import Runtime  # type: ignore
 from langgraph.errors import GraphInterrupt  # type: ignore
 from langgraph.graph import StateGraph, START, END  # type: ignore
-from langgraph.types import interrupt, RetryPolicy, Command  # type: ignore
+from langgraph.types import interrupt, RetryPolicy  # type: ignore
 
 from configurations.config import config
 
@@ -22,6 +21,7 @@ from app.errorsHandler.errors import (
     FailedToBuildMarketingBriefError,
     FailedToBuildPosts,
     FailedToWriteSummaryToS3,
+    FailedToSaveFinalPostData
 )
 from app.models.AgentModels import (
     AgentRunRequest,
@@ -29,11 +29,13 @@ from app.models.AgentModels import (
     LLMPostGeneration,
     AgentPost,
     AgentPostGenerationInterrupt,
+    
 )
 from app.prompts.detailedDescription import MARKETING_BRIEF_PROMPT
 from app.prompts.postGenerationPrompt import POST_GENERATION_PROMPT
 from app.prompts.postRegenerationPrompt import POST_REGENERATION_PROMPT
 from app.repository.s3connection import S3Connection
+from app.repository.postgreSQL import PostgreSQLRepository
 
 # TODO: Later on will have model selection for the user so we can use the best model for the task
 LLM = ChatGoogleGenerativeAI(
@@ -51,23 +53,12 @@ structuredPostGenerationLLM = PostGenerationLLM.with_structured_output(
 )
 
 
-def writeSummaryToS3(response: AgentSummary) -> Path:
-    s3 = S3Connection()
 
-    try:
-        response = s3.put_object(
-            body=response.marketingBrief,
-            bucketName=config.AWS_BUCKET_NAME,
-            key=f"UserNotes/{response.fileName}",
-        )
-        return response.get("url")
-    except Exception as e:
-        raise FailedToWriteSummaryToS3(f"Failed to write summary to S3: {e}") from e
 
 
 class AgentState(TypedDict):
     payload: AgentRunRequest
-    marketingNotes: str
+    notes: AgentSummary
     posts: list[AgentPost]
     regeneratePost: bool
     postRegenerationDescription: str
@@ -77,18 +68,23 @@ class AgentState(TypedDict):
     # TODO: # this is somehting I am planning to add later on as a feature, this will add more context for the user to generate next posts
     # reasonForDelteion: list[str]
 
+def writeSummaryToS3(notes: AgentSummary, userId: str) -> Path:
+    s3 = S3Connection()
+    try:
+        response = s3.put_object(
+            body=notes.marketingBrief,
+            bucketName=config.AWS_BUCKET_NAME,
+            key=f"UserNotes/{userId}/{notes.fileName}",
+        )
+        return f"https://{config.AWS_BUCKET_NAME}.s3.{config.AWS_DEFAULT_REGION}.amazonaws.com/UserNotes/{userId}/{notes.fileName}"
+    except Exception as e:
+        raise FailedToWriteSummaryToS3(f"Failed to write summary to S3: {e}") from e
+
 
 def receiverNode(state: AgentState):
     payload = state.get("payload")
     if payload is None:
         raise NoPayloadError("No payload found during Agentic RAG Flow")
-    if payload.url is None:
-        raise NoURLError("No URL found during Agentic RAG Flow")
-    elif payload.numberOfPosts is None:
-        raise NoNumberOfPostsError("No number of posts found during Agentic RAG Flow")
-    elif payload.startDate is None:
-        raise NoStartDateError("No start date found during Agentic RAG Flow")
-    return {"payload": payload}
 
 
 def buildingMarketingBrief(state: AgentState):
@@ -110,10 +106,7 @@ def buildingMarketingBrief(state: AgentState):
         ):
             raise FailedToBuildMarketingBriefError("Response from model is invalid")
 
-        writeSummaryToS3(response)
-        return {"marketingNotes": response.marketingBrief}
-    except FailedToWriteSummaryToS3:
-        raise
+        return {"notes": response}
     except FailedToBuildMarketingBriefError:
         raise
     except Exception as e:
@@ -122,8 +115,12 @@ def buildingMarketingBrief(state: AgentState):
         ) from e
 
 
-def generatingMarketingPosts(state: AgentState, runtime: Runtime):
-    marketingNotes = state.get("marketingNotes")
+def generatingMarketingPosts(state: AgentState):
+    notes = state.get("notes")
+    print("--------------------------------")
+    print(type(notes))
+    print("--------------------------------")
+    marketingNotes = notes.marketingBrief
     payload = state.get("payload")
     numberOfPosts = payload.numberOfPosts
     startDate = state.get("payload").startDate
@@ -240,8 +237,9 @@ def generatingMarketingPosts(state: AgentState, runtime: Runtime):
         raise FailedToBuildPosts(f"Failed to build posts: {e}") from e
 
 
-def regeneratePost(state: AgentState, runtime: Runtime):
-    marketingNotes = state.get("marketingNotes")
+def regeneratePost(state: AgentState):
+    notes = state.get("notes")
+    marketingNotes = notes.marketingBrief
     payload = state.get("payload")
     postToRegenerate = state.get("postToRegenerate")
     postRegenerationDescription = state.get("postRegenerationDescription")
@@ -331,11 +329,50 @@ def regeneratePost(state: AgentState, runtime: Runtime):
     except Exception as e:
         raise FailedToBuildPosts(f"Failed to regenerate post: {e}") from e
 
+def saveDataToDatabase(state: AgentState, runtime: Runtime):
+    payload = state.get("payload")
+    posts = state.get("posts")
+    notes = state.get("notes")
+    threadId = runtime.execution_info.thread_id
+
+    try: 
+        notesUrl = writeSummaryToS3(notes, payload.userId)
+        createdata = []
+        for post in posts or []:
+            createdata.append(
+                (
+                    payload.userId,
+                    payload.url,
+                    post.platform,
+                    post.content,
+                    post.publishDate,
+                    threadId,
+                    datetime.now(),
+                    notesUrl,
+                )
+            )
+        try:
+            postgres = PostgreSQLRepository()
+            postgres.saveFinalPostDataExecuteMany(createdata)
+        except Exception as e:
+            raise FailedToSaveFinalPostData(f"Failed to save final post data: {e}") from e
+
+    except FailedToSaveFinalPostData:
+        raise
+    except Exception as e:
+        raise FailedToWriteSummaryToS3(f"Failed to write summary to S3: {e}") from e
 
 workflow = StateGraph(AgentState)
 
-workflow.add_node("Validating_Payload", receiverNode)
-workflow.add_node("Building_Marketing_Brief", buildingMarketingBrief)
+workflow.add_node(
+    "Validating_Payload", 
+    receiverNode
+    )
+
+workflow.add_node(
+    "Building_Marketing_Brief", 
+    buildingMarketingBrief)
+
 workflow.add_node(
     "Drafting_And_Reviewing_Posts",
     generatingMarketingPosts,
@@ -355,6 +392,10 @@ workflow.add_node(
     ),
 )
 
+workflow.add_node(
+    "Saving_Data_To_Database", 
+    saveDataToDatabase
+    )
 
 def routingGneratePostsNode(state: AgentState):
     if state.get("regeneratePost"):
@@ -363,7 +404,8 @@ def routingGneratePostsNode(state: AgentState):
         "payload"
     ).numberOfPosts:
         return "Drafting_And_Reviewing_Posts"
-    return END
+    else:
+        return "Saving_Data_To_Database"
 
 
 def routingReGneratePostsNode(state: AgentState):
@@ -382,7 +424,7 @@ workflow.add_conditional_edges(
     {
         "Regenerating_With_Feedback": "Regenerating_With_Feedback",
         "Drafting_And_Reviewing_Posts": "Drafting_And_Reviewing_Posts",
-        END: END,
+        "Saving_Data_To_Database": "Saving_Data_To_Database",
     },
 )
 
@@ -392,6 +434,7 @@ workflow.add_conditional_edges(
     {
         "Regenerating_With_Feedback": "Regenerating_With_Feedback",
         "Drafting_And_Reviewing_Posts": "Drafting_And_Reviewing_Posts",
-        END: END,
     },
 )
+
+workflow.add_edge("Saving_Data_To_Database", END)

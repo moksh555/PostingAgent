@@ -82,3 +82,11 @@ class FailedToWriteSummaryToS3(AppError):
     status_code = status.HTTP_400_BAD_REQUEST
     code = "failed_to_write_summary_to_s3"
     message = "Failed to write summary to S3"
+
+
+class FailedToSaveFinalPostData(AppError):
+    """Raised when the final post data fails to be saved"""
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "failed_to_save_final_post_data"
+    message = "Failed to save final post data"

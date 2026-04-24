@@ -1,56 +1,29 @@
-"""Render the compiled LangGraph as Mermaid text + a PNG.
+"""Render the compiled LangGraph as Mermaid + PNG, using the same `graph` as `AgentServices`.
 
-Run from the Backend/ directory:
+Run from `Backend/`:
 
     uv run python -m tests.graphGenerating
-    # or
     uv run python tests/graphGenerating.py
-
-Outputs:
-    - prints the Mermaid flowchart source to stdout
-    - writes <repo>/Backend/tests/graph.png
-
-The script fakes the `IPython.display` module before importing the agent graph,
-because agentGraph.py has a top-level `from IPython.display import Image, display`
-that we don't want to force into the project's dependencies. If you remove that
-import from agentGraph.py, you can delete the stub block below.
 """
 
 from __future__ import annotations
 
 import sys
-import types
 from pathlib import Path
 
 
-def _stubIPython() -> None:
-    """Register a no-op `IPython.display` module so agentGraph imports cleanly."""
-    if "IPython.display" in sys.modules:
-        return
-    fake_display = types.ModuleType("IPython.display")
-    fake_display.Image = lambda *a, **kw: None  # type: ignore[attr-defined]
-    fake_display.display = lambda *a, **kw: None  # type: ignore[attr-defined]
-    sys.modules.setdefault("IPython", types.ModuleType("IPython"))
-    sys.modules["IPython.display"] = fake_display
-
-
-def _ensureBackendOnPath() -> Path:
-    """Make sure `app`, `configurations`, etc. are importable regardless of cwd."""
+def _ensure_backend_on_path() -> Path:
     backend_dir = Path(__file__).resolve().parent.parent
     sys.path.insert(0, str(backend_dir))
     return backend_dir
 
 
 def generateGraphArtifacts(output_png: Path | None = None) -> Path:
-    """Import the compiled graph, print its Mermaid source, save a PNG.
+    backend_dir = _ensure_backend_on_path()
 
-    Returns the path to the written PNG.
-    """
-    _stubIPython()
-    backend_dir = _ensureBackendOnPath()
+    from app.services.AgentServices import AgentServices  # noqa: WPS433
 
-    # Import only after the stub + path are set up.
-    from app.services.agentGraph import graph  # noqa: WPS433 (local import is intentional)
+    graph = AgentServices().graph
 
     mermaid_text = graph.get_graph().draw_mermaid()
     print(mermaid_text)

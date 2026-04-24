@@ -1,26 +1,13 @@
 from psycopg_pool import ConnectionPool  # type: ignore
-from langgraph.checkpoint.postgres import PostgresSaver  # type: ignore
-from app.services.agentGraph import workflow
-from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer  # type: ignore
+  # type: ignore
+ # type: ignore
 from configurations.config import config
 from datetime import datetime
-import uuid
-from langgraph.types import interrupt, RetryPolicy, Command  # type: ignore
-from app.models.AgentModels import (
-    AgentRunRequest,
-    AgentPostGenerationInterrupt,
-)
+from langgraph.checkpoint.postgres import PostgresSaver # type: ignore
+from app.errorsHandler.errors import FailedToSaveFinalPostData
 
 
 class PostgreSQLRepository:
-    SERDE = JsonPlusSerializer(
-        allowed_msgpack_modules=[
-            ("app.models.AgentModels", "AgentRunRequest"),
-            ("app.models.AgentModels", "LLMPostGeneration"),
-            ("app.models.AgentModels", "AgentPost"),
-        ],
-    )
-
     def __init__(self):
         self.conn = ConnectionPool(
             config.POSTGRES_DB_URI,
@@ -28,37 +15,45 @@ class PostgreSQLRepository:
             max_size=10,
             kwargs={"autocommit": True, "prepare_threshold": 0},
         )
-        self.checkpointer = PostgresSaver(self.conn, serde=self.SERDE)
-        self.checkpointer.setup()
-        self.graph = workflow.compile(checkpointer=self.checkpointer)
 
-    def get_graph(self):
-        return self.graph
-
-    def setup(self):
-        self.checkpointer.setup()
+    def setup(self, checkpointer: PostgresSaver):
+        checkpointer.setup()
+    
+    def saveFinalPostDataExecuteMany(self, data: list[tuple[str, str, str, str, datetime, str, datetime, str]]):
+        try:
+            with self.conn.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        "INSERT INTO posts (user_id, source_url, platform, content, publish_date, thread_id, created_at, notes_url) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                        data,
+                    )
+        except Exception as e:
+            raise FailedToSaveFinalPostData(f"Failed to save final post data: {e}") from e
 
 
 if __name__ == "__main__":
     repository = PostgreSQLRepository()
-    graph = repository.get_graph()
-    configuration = {"configurable": {"thread_id": str(uuid.uuid4())}}
-    for chunk in graph.stream(
-        {
-            "payload": AgentRunRequest(
-                url="https://code.claude.com/docs/en/agent-sdk/overview",
-                numberOfPosts=1,
-                startDate=datetime.now(),
-            )
-        },
-        config=configuration,
-        version="v2",
-    ):
-        if chunk["type"] == "updates":
-            for node_name, state in chunk["data"].items():
-                print(f"Node {node_name}")
-                if node_name == "__interrupt__":
-                    answer = AgentPostGenerationInterrupt(actions="Accept")
-                    graph.invoke(
-                        Command(resume=answer), config=configuration, version="v2"
-                    )
+    now = datetime.now()
+    rows: list[tuple[str, str, str, str, datetime, str, datetime, str]] = [
+        (
+            "123",
+            "https://www.google.com",
+            "linkedin",
+            "test content 1",
+            now,
+            "thread-demo-1",
+            now,
+            "https://www.google.com/notes/1",
+        ),
+        (
+            "123",
+            "https://www.google.com",
+            "linkedin",
+            "test content 2",
+            now,
+            "thread-demo-1",
+            now,
+            "https://www.google.com/notes/2",
+        ),
+    ]
+    repository.saveFinalPostDataExecuteMany(rows)
