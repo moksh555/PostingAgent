@@ -29,27 +29,3 @@ class S3Connection:
             Bucket=bucketName, 
             Key=key
             )
-
-
-
-if __name__ == "__main__":
-    s3 = S3Connection()
-    
-    try:
-        response = s3.put_object(
-            body="test moksh",
-            bucketName=config.AWS_BUCKET_NAME,
-            key="images/test.txt",
-        ) 
-        print(response)
-
-        print("--------------------------------")
-        response = s3.get_file(
-            bucketName=config.AWS_BUCKET_NAME,
-            key="images/tt.txt",
-        )
-        content = response['Body'].read().decode('utf-8')
-        print(content)
-        print("--------------------------------")
-    except Exception as e:
-        print(e)

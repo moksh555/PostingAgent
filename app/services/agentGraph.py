@@ -50,7 +50,6 @@ structuredPostGenerationLLM = PostGenerationLLM.with_structured_output(LLMPostGe
 
 
 def writeSummaryToS3(response: AgentSummary) -> Path:
-    # TODO: Write to S3 and get the URL for the file to be used in the next node for generating posts based on the content of the file
     s3 = S3Connection()
 
     try:

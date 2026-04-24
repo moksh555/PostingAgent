@@ -857,6 +857,170 @@ Also a meta-lesson: unit tests with mocked LLMs would not catch this.
 `simulateRun.py` against real Gemini is a necessary complement.
 
 
+## Stage 31 — Streaming node updates to the client
+
+`AgentServices.startRun` / `resumeRun` used to be plain functions that
+called `graph.stream(...)` internally, drained the loop, and returned
+the final `{state, draft, posts}` dict in one shot. That's fine for a
+CLI — useless for a UI. A human-in-the-loop run can sit at an
+`interrupt(...)` for minutes while the user reads the draft, and the
+browser has nothing to show in the meantime.
+
+Refactor: make the service methods **generators**.
+
+- Yield per-node events as the graph streams:
+  `yield json.dumps({"state": "updates", "node": node_name})`.
+- `return` the final client view at the end — captured by the caller
+  via `StopIteration.value`.
+- HTTP layer in `app/api/version1/runAgent.py` wraps the generator in
+  `StreamingResponse`, so the browser gets a live feed of node
+  transitions over one long-lived response instead of polling.
+
+Gotchas specific to "return a value from a generator":
+
+- **`return <value>` inside a generator is legal** in Python 3, but the
+  value isn't delivered through iteration — only through
+  `StopIteration.value`. Callers that just did `for event in stream:
+  ...` silently dropped the final view.
+- **`simulateRun.py` had to be rewritten** around a `consumeRun` helper
+  that does `while True: next(stream)` in a `try` / `except
+  StopIteration as stop: finalPayload = stop.value` loop. It prints
+  node events as they arrive and parses `stop.value` at the end.
+- **`stream_mode="updates"` + `version="v2"` shape**: each chunk is
+  `{"type": "updates", "data": {node_name: partial_state}}`. The
+  service filters on `chunk["type"] == "updates"` and only forwards
+  the node name; partial state leaks internal keys to the client, so
+  it's intentionally dropped before `json.dumps`.
+- **Single client-view helper**: `_buildClientView(graph, threadId,
+  config)` stays unchanged from Stage 29. `startRun` and `resumeRun`
+  both `return` its result at the end — the frontend gets the same
+  shape regardless of which endpoint emitted it.
+
+
+## Stage 32 — Prompt cleanup after the schema fix
+
+Stage 30 traced the "schema-description-as-content" bug to a
+`POST_GENERATION_PROMPT` that still asked for 8 output fields against
+a 2-field schema. The minimum fix was a rewrite of the `## Output`
+section, but the prompt had accumulated a lot of stale scaffolding
+over two iterations (placeholder templating, platform-specific
+conventions, scheduling rules, variety checklists, angle banks). Now
+that variety and scheduling context are injected as a separate
+`HumanMessage` at call time (`previousPostsSummary`, the `Publish date
+for THIS post: ...` block), most of that scaffolding was double work.
+
+Trimmed the prompt from ~130 lines to ~44. What's left:
+
+- **Context** — one paragraph pointing at the brief as the single
+  source of truth.
+- **Task** — one paragraph saying "exactly one post per invocation,
+  pick an unused angle".
+- **Rules** — four bullets: draw facts from the brief, vary the angle,
+  no AI stock phrases, no emojis unless the brief's tone section
+  allows them.
+- **Output** — two bullets, matching the two schema fields
+  (`content`, `publishDate`). No preamble, no extra fields.
+
+Everything that was genuinely per-call (post index, total posts,
+campaign start date, platform, already-accepted posts) now lives in
+the human-message payload the node assembles per invocation, not in
+the system prompt. The system prompt stays constant across calls and
+is easy to diff against the schema in one screenful.
+
+Lesson already on the list ("prompt ↔ schema must agree"), corollary:
+prompts that grew during exploration are liabilities once the schema
+stabilises. Cut anything the schema no longer asks for.
+
+
+## Stage 33 — Marketing brief persistence on S3
+
+Up through Stage 10 the marketing brief was being written to local
+disk under `Backend/testSummary/<slug>-brief.txt`. Fine for the
+developer machine, obviously wrong for a service that runs in a
+container, behind a load balancer, or on ephemeral instances where
+`testSummary/` vanishes on restart. Moved brief storage to S3.
+
+New pieces:
+
+- **`app/repository/s3connection.py`** — a thin `S3Connection` wrapper
+  around `boto3.client("s3", ...)` with `put_object(body, bucketName,
+  key)` and `get_file(bucketName, key)` helpers. Construction reads
+  `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`,
+  `AWS_BUCKET_NAME` from `Config`. An `if __name__ == "__main__"`
+  block round-trips a small object so `uv run python -m
+  app.repository.s3connection` doubles as a credentials smoke test.
+- **`configurations/config.py`** picked up the four AWS fields.
+  `.env` gets the same four keys; `.env.example` stays gitignored but
+  allow-listed.
+- **`app/errorsHandler/errors.py`** grew a
+  `FailedToWriteSummaryToS3(AppError)` so the brief-build path can
+  distinguish "Gemini misbehaved" from "S3 credentials / bucket are
+  broken". Same `AppError` plumbing — consistent JSON envelope for
+  free.
+- **`app/services/agentGraph.py::writeSummaryToS3(response)`**
+  replaces the old `writeSummaryToFile`. Writes
+  `response.marketingBrief` to `UserNotes/<response.fileName>` in the
+  configured bucket. `buildingMarketingBrief` calls it right after
+  validating the LLM output.
+- **Exception ordering in `buildingMarketingBrief`** had to be
+  extended by the same lesson from Stages 13 and 24: a new typed
+  exception means a new passthrough branch before the catch-all,
+  otherwise `except Exception` silently rewraps
+  `FailedToWriteSummaryToS3` into `FailedToBuildMarketingBriefError`
+  and the router picks the wrong retry behaviour.
+
+  ```python
+  except FailedToWriteSummaryToS3:
+      raise
+  except FailedToBuildMarketingBriefError:
+      raise
+  except Exception as e:
+      raise FailedToBuildMarketingBriefError(...) from e
+  ```
+
+- **`boto3>=1.42.95`** added to `pyproject.toml`; `uv.lock` refreshed.
+
+Not yet done (intentional, next stage):
+
+- Using the S3 object URL as the input for downstream nodes instead
+  of the in-memory `marketingNotes` string. That change lets the
+  brief survive graph recompiles and lets a separate service (or a
+  cold-started replica) regenerate posts without re-running the
+  brief node.
+
+
+## Stage 34 — `commands.py` runbook and `__init__.py` slim-down
+
+Two small chores that had been piling up:
+
+- **`Backend/commands.py`** — a single documented reference for every
+  runnable entrypoint in the project: `main.py` (FastAPI via
+  `uv run fastapi dev main.py` or `uvicorn main:app --reload`),
+  `app/repository/s3connection.py` (as `python -m
+  app.repository.s3connection`), every script under `tests/` (both
+  `python -m` and `python <path>` forms, since the test scripts
+  prepend `Backend/` to `sys.path` themselves), and the pytest /
+  uv housekeeping commands. Also explicitly lists which files are
+  *not* runnable directly (pure library modules under `services/`,
+  `api/`, `models/`, `prompts/`, `errorsHandler/`,
+  `configurations/`) so future-me doesn't go looking for a
+  `__main__` that never existed. Running `uv run python commands.py`
+  prints the whole thing as a cheat sheet.
+
+- **`app/errorsHandler/__init__.py` emptied.** The old file
+  re-exported every error class at the package root
+  (`from app.errorsHandler import AppError, NoURLError, ...`).
+  It had already drifted: `FailedToBuildPosts` was listed without
+  quotes inside `__all__` (so `__all__` contained the class, not the
+  string), and every new error class (e.g.
+  `FailedToWriteSummaryToS3`) needed two edits — one in `errors.py`,
+  one in `__init__.py` — or the package-level import stopped
+  working. Call sites were mixed anyway. Cleaned up by deleting the
+  re-exports; everything now imports from
+  `app.errorsHandler.errors` explicitly. Less magic, one source of
+  truth, no `__all__` to keep in sync.
+
+
 ## What the system does end-to-end today
 
 1. Client `POST /api/v1/runAgent` with `{url, numberOfPosts, startDate}`.
@@ -867,8 +1031,10 @@ Also a meta-lesson: unit tests with mocked LLMs would not catch this.
 4. **Validating_Payload** — sanity-checks the payload (redundant with the
    FastAPI boundary, useful for direct-invocation tests).
 5. **Building_Marketing_Brief** — Gemini in a continuation loop produces
-   a 12-section brief; `writeSummaryToFile` persists it under
-   `testSummary/<slug>.txt`.
+   a 12-section brief; `writeSummaryToS3` persists it to
+   `s3://<AWS_BUCKET_NAME>/UserNotes/<fileName>` via the `S3Connection`
+   wrapper. S3 write failures surface as `FailedToWriteSummaryToS3`,
+   distinct from LLM-side `FailedToBuildMarketingBriefError`.
 6. **Drafting_And_Reviewing_Posts** — state machine; one step per
    invocation:
    - **Produce step** (cache miss): chain the generation prompt with
@@ -992,3 +1158,26 @@ Also a meta-lesson: unit tests with mocked LLMs would not catch this.
   the same whether the thread just paused for the first time or
   resumed from `Command(resume=...)`. Build it in one helper
   (`_buildClientView`) and call it from both service methods.
+- **Generators that `return` hide their final value.** A service
+  method that streams node events *and* produces a terminal view has
+  to be consumed with a `try: next(...) / except StopIteration as
+  stop: stop.value` pattern, not a plain `for` loop. If you're
+  plugging the generator into `StreamingResponse`, split the two
+  responsibilities (stream *or* return-the-view), or document the
+  `StopIteration.value` contract loudly — otherwise callers silently
+  drop the final state.
+- **Persist artefacts off the local filesystem.** Brief-to-disk was
+  convenient until the service needed to run outside the dev
+  machine. S3 (or any object store) + a thin wrapper that owns
+  credentials via `Config` beats `Path(__file__).parent / ...`. Pair
+  it with a dedicated exception class (`FailedToWriteSummaryToS3`)
+  so storage failures don't get miscategorised as LLM failures and
+  routed through `RetryPolicy`. Every new typed exception needs its
+  own passthrough branch above the catch-all in the node that uses
+  it — same rule as `GraphInterrupt` and `FailedToBuildPosts`.
+- **Package `__init__.py` as API, not as re-export boilerplate.**
+  A big re-export block that has to be edited in lockstep with every
+  new class in the package will drift. If call sites are importing
+  from the submodule directly anyway, delete the re-exports and keep
+  `__init__.py` empty (or minimal). One source of truth beats a
+  second one that silently falls out of sync.
