@@ -6,7 +6,7 @@ from typing_extensions import TypedDict  # type: ignore
 
 from langchain_core.prompts import ChatPromptTemplate  # type: ignore
 from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
-from langgraph.checkpoint.memory import InMemorySaver   # type: ignore
+from langgraph.checkpoint.memory import InMemorySaver  # type: ignore
 from langgraph.runtime import Runtime  # type: ignore
 from langgraph.errors import GraphInterrupt  # type: ignore
 from langgraph.graph import StateGraph, START, END  # type: ignore
@@ -46,7 +46,9 @@ PostGenerationLLM = ChatGoogleGenerativeAI(
     model="gemini-3-flash-preview",
     google_api_key=config.GEMINI_API_KEY,
 )
-structuredPostGenerationLLM = PostGenerationLLM.with_structured_output(LLMPostGeneration)
+structuredPostGenerationLLM = PostGenerationLLM.with_structured_output(
+    LLMPostGeneration
+)
 
 
 def writeSummaryToS3(response: AgentSummary) -> Path:
@@ -72,8 +74,8 @@ class AgentState(TypedDict):
     postToRegenerate: LLMPostGeneration
     currentLoopStartNumber: int
     cacheDraft: LLMPostGeneration
-    # TODO: # this is somehting I am planning to add later on as a feature, this will add more context for the user to generate next posts 
-    # reasonForDelteion: list[str] 
+    # TODO: # this is somehting I am planning to add later on as a feature, this will add more context for the user to generate next posts
+    # reasonForDelteion: list[str]
 
 
 def receiverNode(state: AgentState):
@@ -115,7 +117,9 @@ def buildingMarketingBrief(state: AgentState):
     except FailedToBuildMarketingBriefError:
         raise
     except Exception as e:
-        raise FailedToBuildMarketingBriefError(f"Failed to build marketing brief: {e}") from e
+        raise FailedToBuildMarketingBriefError(
+            f"Failed to build marketing brief: {e}"
+        ) from e
 
 
 def generatingMarketingPosts(state: AgentState, runtime: Runtime):
@@ -130,22 +134,25 @@ def generatingMarketingPosts(state: AgentState, runtime: Runtime):
 
     try:
         for _ in range(currentLoopStartNumber, numberOfPosts):
-
             if cacheDraft is not None:
                 postGenerated = cacheDraft
             else:
-                prompt = ChatPromptTemplate.from_messages([
-                    ("system", "{system_instruction}"),
-                    ("human", "{user_input}"),
-                ])
+                prompt = ChatPromptTemplate.from_messages(
+                    [
+                        ("system", "{system_instruction}"),
+                        ("human", "{user_input}"),
+                    ]
+                )
 
                 chain = prompt | structuredPostGenerationLLM
 
                 postIndex = currentLoopStartNumber + 1
-                previousPostsSummary = "\n".join(
-                    f"- Post {p.postNumber}: {p.content[:140]}..."
-                    for p in postList
-                ) or "(none yet — this is the first post in the campaign)"
+                previousPostsSummary = (
+                    "\n".join(
+                        f"- Post {p.postNumber}: {p.content[:140]}..." for p in postList
+                    )
+                    or "(none yet — this is the first post in the campaign)"
+                )
 
                 userInput = (
                     f"Marketing Note:\n{marketingNotes}\n\n"
@@ -163,17 +170,17 @@ def generatingMarketingPosts(state: AgentState, runtime: Runtime):
                     f"Generate exactly ONE post for slot {postIndex}."
                 )
 
-                postGenerated = chain.invoke({
-                    "system_instruction": postGenerateSystemPrompt,
-                    "user_input": userInput,
-                })
+                postGenerated = chain.invoke(
+                    {
+                        "system_instruction": postGenerateSystemPrompt,
+                        "user_input": userInput,
+                    }
+                )
 
                 if postGenerated.content:
-                    postGenerated.content = (
-                        postGenerated.content
-                        .replace("\\n", "\n")
-                        .replace("\\t", "\t")
-                    )
+                    postGenerated.content = postGenerated.content.replace(
+                        "\\n", "\n"
+                    ).replace("\\t", "\t")
 
                 if (
                     not postGenerated.content
@@ -190,19 +197,23 @@ def generatingMarketingPosts(state: AgentState, runtime: Runtime):
                     "posts": postList,
                 }
 
-            answer: AgentPostGenerationInterrupt = interrupt({
-                "postContent": postGenerated.content,
-                "publishDate": postGenerated.publishDate,
-                "actions": ["Accept", "Reject", "Regenerate"],
-            })
+            answer: AgentPostGenerationInterrupt = interrupt(
+                {
+                    "postContent": postGenerated.content,
+                    "publishDate": postGenerated.publishDate,
+                    "actions": ["Accept", "Reject", "Regenerate"],
+                }
+            )
 
             if answer.actions == "Accept":
-                postList.append(AgentPost(
-                    content=postGenerated.content,
-                    publishDate=postGenerated.publishDate,
-                    platform="LinkedIn",
-                    postNumber=len(postList) + 1,
-                ))
+                postList.append(
+                    AgentPost(
+                        content=postGenerated.content,
+                        publishDate=postGenerated.publishDate,
+                        platform="LinkedIn",
+                        postNumber=len(postList) + 1,
+                    )
+                )
                 return {
                     "posts": postList,
                     "cacheDraft": None,
@@ -238,27 +249,29 @@ def regeneratePost(state: AgentState, runtime: Runtime):
     postsList = state.get("posts") or []
     cacheDraft = state.get("cacheDraft")
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "{system_instruction}"),
-        ("human", "{user_input}"),
-    ])
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", "{system_instruction}"),
+            ("human", "{user_input}"),
+        ]
+    )
     chain = prompt | structuredPostGenerationLLM
 
     try:
         if cacheDraft is not None:
             postReGenerated = cacheDraft
         else:
-            postReGenerated = chain.invoke({
-                "system_instruction": postGenerateSystemPrompt,
-                "user_input": f"Here is the input 'postToRegenerate': {postToRegenerate.content}, 'postRegenerationDescription': {postRegenerationDescription}, 'Notes': {marketingNotes}, url: {payload.url}, publishDate: {postToRegenerate.publishDate}",
-            })
+            postReGenerated = chain.invoke(
+                {
+                    "system_instruction": postGenerateSystemPrompt,
+                    "user_input": f"Here is the input 'postToRegenerate': {postToRegenerate.content}, 'postRegenerationDescription': {postRegenerationDescription}, 'Notes': {marketingNotes}, url: {payload.url}, publishDate: {postToRegenerate.publishDate}",
+                }
+            )
 
             if postReGenerated.content:
-                postReGenerated.content = (
-                    postReGenerated.content
-                    .replace("\\n", "\n")
-                    .replace("\\t", "\t")
-                )
+                postReGenerated.content = postReGenerated.content.replace(
+                    "\\n", "\n"
+                ).replace("\\t", "\t")
 
             if (
                 not postReGenerated.content
@@ -266,19 +279,20 @@ def regeneratePost(state: AgentState, runtime: Runtime):
                 or not postReGenerated.publishDate
             ):
                 raise FailedToBuildPosts(
-                    "Failed to regenerate post: invalid / too-short response "
-                    "from model"
+                    "Failed to regenerate post: invalid / too-short response from model"
                 )
 
             return {
                 "cacheDraft": postReGenerated,
             }
 
-        answer: AgentPostGenerationInterrupt = interrupt({
-            "postContent": postReGenerated.content,
-            "publishDate": postReGenerated.publishDate,
-            "actions": ["Accept", "Reject", "Regenerate"],
-        })
+        answer: AgentPostGenerationInterrupt = interrupt(
+            {
+                "postContent": postReGenerated.content,
+                "publishDate": postReGenerated.publishDate,
+                "actions": ["Accept", "Reject", "Regenerate"],
+            }
+        )
 
         if answer.actions == "Regenerate":
             return {
@@ -288,12 +302,14 @@ def regeneratePost(state: AgentState, runtime: Runtime):
                 "cacheDraft": None,
             }
         elif answer.actions == "Accept":
-            postsList.append(AgentPost(
-                content=postReGenerated.content,
-                publishDate=postReGenerated.publishDate,
-                platform="LinkedIn",
-                postNumber=len(postsList) + 1,
-            ))
+            postsList.append(
+                AgentPost(
+                    content=postReGenerated.content,
+                    publishDate=postReGenerated.publishDate,
+                    platform="LinkedIn",
+                    postNumber=len(postsList) + 1,
+                )
+            )
             return {
                 "posts": postsList,
                 "regeneratePost": False,
@@ -318,38 +334,34 @@ def regeneratePost(state: AgentState, runtime: Runtime):
 
 workflow = StateGraph(AgentState)
 
+workflow.add_node("Validating_Payload", receiverNode)
+workflow.add_node("Building_Marketing_Brief", buildingMarketingBrief)
 workflow.add_node(
-    "Validating_Payload", 
-    receiverNode
-    )
-workflow.add_node(
-    "Building_Marketing_Brief", 
-    buildingMarketingBrief
-    )
-workflow.add_node(
-    "Drafting_And_Reviewing_Posts", 
+    "Drafting_And_Reviewing_Posts",
     generatingMarketingPosts,
     retry_policy=RetryPolicy(
         max_attempts=3,
         backoff_factor=3,
-        retry_on = [FailedToBuildPosts],
-    )
-    )
+        retry_on=[FailedToBuildPosts],
+    ),
+)
 workflow.add_node(
-    "Regenerating_With_Feedback", 
+    "Regenerating_With_Feedback",
     regeneratePost,
     retry_policy=RetryPolicy(
         max_attempts=3,
         backoff_factor=3,
-        retry_on = [FailedToBuildPosts],
+        retry_on=[FailedToBuildPosts],
     ),
-    )
+)
 
 
 def routingGneratePostsNode(state: AgentState):
     if state.get("regeneratePost"):
         return "Regenerating_With_Feedback"
-    elif (state.get("currentLoopStartNumber") or 0) < state.get("payload").numberOfPosts:
+    elif (state.get("currentLoopStartNumber") or 0) < state.get(
+        "payload"
+    ).numberOfPosts:
         return "Drafting_And_Reviewing_Posts"
     return END
 
@@ -383,7 +395,3 @@ workflow.add_conditional_edges(
         END: END,
     },
 )
-
-
-
-

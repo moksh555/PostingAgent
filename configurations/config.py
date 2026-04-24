@@ -1,11 +1,11 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict #type:ignore
+from pydantic_settings import BaseSettings, SettingsConfigDict  # type:ignore
 from pathlib import Path
 
 CURRENT_FOLDER = Path(__file__).parent.absolute()
 ENV_FILE_PATH = CURRENT_FOLDER / ".env"
 
+
 class Config(BaseSettings):
-    
     PORT: int
     GEMINI_API_KEY: str
     POSTGRES_DB_URI: str
@@ -20,5 +20,6 @@ class Config(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
 
 config = Config()

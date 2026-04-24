@@ -1,7 +1,7 @@
 import logging
 import uuid
 from typing import Any
-import json 
+import json
 from langgraph.types import Command  # type: ignore
 
 from app.models.AgentModels import (
@@ -26,8 +26,7 @@ class AgentServices:
 
     def startRun(self, payload: AgentRunRequest) -> dict[str, Any]:
         threadId = str(uuid.uuid4())
-        config = {
-            "configurable": {"thread_id": threadId}}
+        config = {"configurable": {"thread_id": threadId}}
 
         graph = PostgreSQLRepository().get_graph()
 
@@ -77,16 +76,20 @@ class AgentServices:
                     "content": cacheDraft.content,
                     "publishDate": cacheDraft.publishDate.isoformat(),
                 }
-            return json.dumps({
-                "threadId": threadId,
-                "state": "awaiting_review",
-                "draft": draft,
-                "posts": posts,
-            })
+            return json.dumps(
+                {
+                    "threadId": threadId,
+                    "state": "awaiting_review",
+                    "draft": draft,
+                    "posts": posts,
+                }
+            )
 
-        return json.dumps({
-            "threadId": threadId,
-            "state": "completed",
-            "draft": None,
-            "posts": posts,
-        })
+        return json.dumps(
+            {
+                "threadId": threadId,
+                "state": "completed",
+                "draft": None,
+                "posts": posts,
+            }
+        )

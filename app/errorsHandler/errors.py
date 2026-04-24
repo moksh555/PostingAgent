@@ -27,12 +27,14 @@ class NoPayloadError(AppError):
     code = "no_payload"
     message = "Request body is required but was empty"
 
+
 class NoURLError(AppError):
     """Raised when the request has no URL where one is required."""
 
     status_code = status.HTTP_400_BAD_REQUEST
     code = "no_url"
     message = "URL is required but was empty"
+
 
 class NoNumberOfPostsError(AppError):
     """Raised when the request has no number of posts where one is required."""
@@ -41,12 +43,14 @@ class NoNumberOfPostsError(AppError):
     code = "no_number_of_posts"
     message = "Number of posts is required but was empty"
 
+
 class NoStartDateError(AppError):
     """Raised when the request has no start date where one is required."""
 
     status_code = status.HTTP_400_BAD_REQUEST
     code = "no_start_date"
     message = "Start date is required but was empty"
+
 
 class FailedToScrapeURLError(AppError):
     """Raised when the request has no start date where one is required."""
@@ -55,6 +59,7 @@ class FailedToScrapeURLError(AppError):
     code = "failed_to_scrape_url"
     message = "Failed to scrape URL"
 
+
 class FailedToBuildMarketingBriefError(AppError):
     """Raised when the request has no start date where one is required."""
 
@@ -62,13 +67,15 @@ class FailedToBuildMarketingBriefError(AppError):
     code = "failed_to_build_marketing_brief"
     message = "Failed to build marketing brief"
 
+
 class FailedToBuildPosts(AppError):
     """Raised when the request has no start date where one is required."""
 
     status_code = status.HTTP_400_BAD_REQUEST
     code = "failed_to_build_marketing_brief"
     message = "Failed to build marketing brief"
-    
+
+
 class FailedToWriteSummaryToS3(AppError):
     """Raised when the thing that is being written to S3 fails to write"""
 

@@ -10,7 +10,7 @@ class AgentRunRequest(BaseModel):
         pattern=r"^https?://[^\s/$.?#].[^\s]*$",
         description="The URL to scrape",
     )
-    
+
     numberOfPosts: int = Field(
         ...,
         gt=0,
@@ -29,6 +29,7 @@ class AgentRunResponse(BaseModel):
     numberOfPosts: int = Field(..., description="Echo of the requested post count")
     startDate: datetime = Field(..., description="Echo of the requested start date")
 
+
 class AgentSummary(BaseModel):
     marketingBrief: str = Field(
         ...,
@@ -41,17 +42,29 @@ class AgentSummary(BaseModel):
         description="The file name to save the brief under, ending in '.txt'.",
     )
 
+
 class LLMPostGeneration(BaseModel):
     content: str = Field(..., description="The full content of the post")
-    publishDate: datetime = Field(..., description="The date and time the post will be published")
+    publishDate: datetime = Field(
+        ..., description="The date and time the post will be published"
+    )
+
 
 class AgentPostGenerationInterrupt(BaseModel):
-    actions: str = Field(...,description="The actions to takeon the post chose by user",
+    actions: str = Field(
+        ...,
+        description="The actions to takeon the post chose by user",
     )
-    postChangeDescription: str = Field(default="", description="The user description of post change if they want to regenerate the post or delte the post for some reason")
+    postChangeDescription: str = Field(
+        default="",
+        description="The user description of post change if they want to regenerate the post or delte the post for some reason",
+    )
+
 
 class AgentPost(BaseModel):
     content: str = Field(..., description="The content of the post")
-    publishDate: datetime = Field(..., description="The date and time the post will be published")
+    publishDate: datetime = Field(
+        ..., description="The date and time the post will be published"
+    )
     platform: str = Field(..., description="The platform the post will be published to")
     postNumber: int = Field(default=0, description="The number of the post")

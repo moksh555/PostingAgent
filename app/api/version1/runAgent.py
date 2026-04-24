@@ -5,7 +5,7 @@ from pydantic import ValidationError  # type: ignore
 
 from app.models.AgentModels import AgentRunRequest, AgentRunResponse
 from app.services.AgentServices import AgentServices
-from fastapi.responses import StreamingResponse # type: ignore
+from fastapi.responses import StreamingResponse  # type: ignore
 
 router = APIRouter()
 agent_services = AgentServices()
@@ -25,9 +25,11 @@ async def run_agent(payload: AgentRunRequest):
         AgentRunResponse
     """
     try:
-        return StreamingResponse(agent_services.runAgent(
-            payload=payload,
-        ))
+        return StreamingResponse(
+            agent_services.runAgent(
+                payload=payload,
+            )
+        )
     except ValidationError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

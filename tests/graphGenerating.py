@@ -28,8 +28,8 @@ def _stubIPython() -> None:
     if "IPython.display" in sys.modules:
         return
     fake_display = types.ModuleType("IPython.display")
-    fake_display.Image = lambda *a, **kw: None        # type: ignore[attr-defined]
-    fake_display.display = lambda *a, **kw: None       # type: ignore[attr-defined]
+    fake_display.Image = lambda *a, **kw: None  # type: ignore[attr-defined]
+    fake_display.display = lambda *a, **kw: None  # type: ignore[attr-defined]
     sys.modules.setdefault("IPython", types.ModuleType("IPython"))
     sys.modules["IPython.display"] = fake_display
 
