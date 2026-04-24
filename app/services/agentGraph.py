@@ -14,13 +14,14 @@ from langgraph.types import interrupt, RetryPolicy, Command  # type: ignore
 
 from configurations.config import config
 
-from app.errorsHandler import (
+from app.errorsHandler.errors import (
     NoPayloadError,
     NoURLError,
     NoNumberOfPostsError,
     NoStartDateError,
     FailedToBuildMarketingBriefError,
     FailedToBuildPosts,
+    FailedToWriteSummaryToS3,
 )
 from app.models.AgentModels import (
     AgentRunRequest,
@@ -32,7 +33,7 @@ from app.models.AgentModels import (
 from app.prompts.detailedDescription import MARKETING_BRIEF_PROMPT
 from app.prompts.postGenerationPrompt import POST_GENERATION_PROMPT
 from app.prompts.postRegenerationPrompt import POST_REGENERATION_PROMPT
-
+from app.repository.s3connection import S3Connection
 
 # TODO: Later on will have model selection for the user so we can use the best model for the task
 LLM = ChatGoogleGenerativeAI(
@@ -48,12 +49,19 @@ PostGenerationLLM = ChatGoogleGenerativeAI(
 structuredPostGenerationLLM = PostGenerationLLM.with_structured_output(LLMPostGeneration)
 
 
-def writeSummaryToFile(response: AgentSummary) -> Path:
+def writeSummaryToS3(response: AgentSummary) -> Path:
     # TODO: Write to S3 and get the URL for the file to be used in the next node for generating posts based on the content of the file
-    filePath = Path(__file__).parent.parent.parent.absolute() / "testSummary" / response.fileName
-    with open(filePath, "w", encoding="utf-8") as f:
-        f.write(response.marketingBrief)
-    return filePath
+    s3 = S3Connection()
+
+    try:
+        response = s3.put_object(
+            body=response.marketingBrief,
+            bucketName=config.AWS_BUCKET_NAME,
+            key=f"UserNotes/{response.fileName}",
+        )
+        return response.get("url")
+    except Exception as e:
+        raise FailedToWriteSummaryToS3(f"Failed to write summary to S3: {e}") from e
 
 
 class AgentState(TypedDict):
@@ -101,10 +109,14 @@ def buildingMarketingBrief(state: AgentState):
         ):
             raise FailedToBuildMarketingBriefError("Response from model is invalid")
 
-        writeSummaryToFile(response)
+        writeSummaryToS3(response)
         return {"marketingNotes": response.marketingBrief}
+    except FailedToWriteSummaryToS3:
+        raise
+    except FailedToBuildMarketingBriefError:
+        raise
     except Exception as e:
-        raise FailedToBuildMarketingBriefError(f"Failed to build marketing brief: {e}")
+        raise FailedToBuildMarketingBriefError(f"Failed to build marketing brief: {e}") from e
 
 
 def generatingMarketingPosts(state: AgentState, runtime: Runtime):

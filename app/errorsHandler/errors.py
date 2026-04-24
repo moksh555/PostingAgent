@@ -69,3 +69,9 @@ class FailedToBuildPosts(AppError):
     code = "failed_to_build_marketing_brief"
     message = "Failed to build marketing brief"
     
+class FailedToWriteSummaryToS3(AppError):
+    """Raised when the thing that is being written to S3 fails to write"""
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "failed_to_write_summary_to_s3"
+    message = "Failed to write summary to S3"

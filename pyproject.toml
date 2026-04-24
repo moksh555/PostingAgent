@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "beautifulsoup4>=4.14.3",
+    "boto3>=1.42.95",
     "fastapi[standard]>=0.136.0",
     "langchain-google-genai>=4.2.2",
     "langgraph>=1.1.8",
