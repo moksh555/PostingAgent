@@ -6,7 +6,7 @@ from pydantic import ValidationError  # type: ignore
 from app.models.AgentModels import AgentRunRequest, AgentRunResponse
 from app.services.AgentServices import AgentServices
 from fastapi.responses import StreamingResponse  # type: ignore
-
+from app.api.depends.servicesDepends import get_agent_services
 router = APIRouter()
 agent_services = AgentServices()
 

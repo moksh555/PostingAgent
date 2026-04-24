@@ -7,11 +7,10 @@ from app.models.AgentModels import (
     AgentRunRequest,
 )
 from app.models.healthCheckModel import HealthCheckModel
-from app.repository.postgreSQL import PostgreSQLRepository # type: ignore
 from langgraph.checkpoint.postgres import PostgresSaver # type: ignore
 from app.services.agentGraph import workflow
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer # type: ignore
-
+from app.api.depends.repositoryDepends import get_postgres_repository_checkpointer
 class AgentServices:
     SERDE = JsonPlusSerializer(
         allowed_msgpack_modules=[
@@ -21,11 +20,11 @@ class AgentServices:
             ("app.models.AgentModels", "AgentPost"),
         ],
     )
+    
     def __init__(self) -> None:
-        postgres = PostgreSQLRepository()
-        self.conn = postgres.conn
+        self.conn = get_postgres_repository_checkpointer().conn
         self.checkpointer = PostgresSaver(self.conn, serde=self.SERDE)
-        postgres.setup(self.checkpointer)
+        get_postgres_repository_checkpointer().setup(self.checkpointer)
         self.graph = workflow.compile(checkpointer=self.checkpointer)
 
     def get_health_check(self) -> HealthCheckModel:
@@ -34,7 +33,11 @@ class AgentServices:
             message="The Agent Service is running",
         )
 
-    def startRun(self, payload: AgentRunRequest) -> dict[str, Any]:
+    def startRun(
+        self, 
+        payload: AgentRunRequest
+    ) -> dict[str, Any]:
+
         threadId = str(uuid.uuid4())
         config = {"configurable": {"thread_id": threadId}}
 
@@ -55,6 +58,7 @@ class AgentServices:
         threadId: str,
         decision: AgentPostGenerationInterrupt,
     ) -> dict[str, Any]:
+
         config = {"configurable": {"thread_id": threadId}}
 
         for chunk in self.graph.stream(

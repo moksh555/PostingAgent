@@ -10,7 +10,6 @@ from langgraph.runtime import Runtime  # type: ignore
 from langgraph.errors import GraphInterrupt  # type: ignore
 from langgraph.graph import StateGraph, START, END  # type: ignore
 from langgraph.types import interrupt, RetryPolicy  # type: ignore
-
 from configurations.config import config
 
 from app.errorsHandler.errors import (
@@ -34,8 +33,8 @@ from app.models.AgentModels import (
 from app.prompts.detailedDescription import MARKETING_BRIEF_PROMPT
 from app.prompts.postGenerationPrompt import POST_GENERATION_PROMPT
 from app.prompts.postRegenerationPrompt import POST_REGENERATION_PROMPT
+from app.api.depends.repositoryDepends import get_postgres_repository_posts
 from app.repository.s3connection import S3Connection
-from app.repository.postgreSQL import PostgreSQLRepository
 
 # TODO: Later on will have model selection for the user so we can use the best model for the task
 LLM = ChatGoogleGenerativeAI(
@@ -117,9 +116,6 @@ def buildingMarketingBrief(state: AgentState):
 
 def generatingMarketingPosts(state: AgentState):
     notes = state.get("notes")
-    print("--------------------------------")
-    print(type(notes))
-    print("--------------------------------")
     marketingNotes = notes.marketingBrief
     payload = state.get("payload")
     numberOfPosts = payload.numberOfPosts
@@ -355,8 +351,8 @@ def saveDataToDatabase(state: AgentState, runtime: Runtime):
                 )
             )
         try:
-            postgres = PostgreSQLRepository()
-            postgres.saveFinalPostDataExecuteMany(createdata)
+            postgresRepository = get_postgres_repository_posts()
+            postgresRepository.saveFinalPostDataExecuteMany(createdata)
         except Exception as e:
             raise FailedToSaveFinalPostData(f"Failed to save final post data: {e}") from e
 
