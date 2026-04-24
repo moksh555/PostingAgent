@@ -71,7 +71,7 @@ class AgentState(TypedDict):
 def writeSummaryToS3(notes: AgentSummary, userId: str) -> Path:
     s3 = S3Connection()
     try:
-        response = s3.put_object(
+        s3.put_object(
             body=notes.marketingBrief,
             bucketName=config.AWS_BUCKET_NAME,
             key=f"UserNotes/{userId}/{notes.fileName}",
@@ -336,7 +336,10 @@ def saveDataToDatabase(state: AgentState, runtime: Runtime):
     threadId = runtime.execution_info.thread_id
 
     try: 
-        notesUrl = writeSummaryToS3(notes, payload.userId)
+        notesUrl = writeSummaryToS3(
+            notes, 
+            payload.userId
+        )
         createdata = []
         for post in posts or []:
             createdata.append(

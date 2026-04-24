@@ -1,6 +1,4 @@
 from psycopg_pool import ConnectionPool  # type: ignore
-  # type: ignore
- # type: ignore
 from configurations.config import config
 from datetime import datetime
 from langgraph.checkpoint.postgres import PostgresSaver # type: ignore
@@ -29,31 +27,3 @@ class PostgreSQLRepository:
                     )
         except Exception as e:
             raise FailedToSaveFinalPostData(f"Failed to save final post data: {e}") from e
-
-
-if __name__ == "__main__":
-    repository = PostgreSQLRepository()
-    now = datetime.now()
-    rows: list[tuple[str, str, str, str, datetime, str, datetime, str]] = [
-        (
-            "123",
-            "https://www.google.com",
-            "linkedin",
-            "test content 1",
-            now,
-            "thread-demo-1",
-            now,
-            "https://www.google.com/notes/1",
-        ),
-        (
-            "123",
-            "https://www.google.com",
-            "linkedin",
-            "test content 2",
-            now,
-            "thread-demo-1",
-            now,
-            "https://www.google.com/notes/2",
-        ),
-    ]
-    repository.saveFinalPostDataExecuteMany(rows)
