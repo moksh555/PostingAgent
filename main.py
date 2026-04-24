@@ -5,8 +5,8 @@ from fastapi.exceptions import RequestValidationError  # type: ignore
 from fastapi.responses import JSONResponse  # type: ignore
 
 from app.api.router import router as mainRouter
+from app.errorsHandler.errors import AppError
 
-logger = logging.getLogger(__name__)
 
 APP_VERSION = "1.0.0:v1"
 
@@ -16,20 +16,15 @@ app = FastAPI(
 )
 
 
-@app.exception_handler(RequestValidationError)
-async def on_request_validation_error(
-    request: Request, exc: RequestValidationError
-) -> JSONResponse:
-    """Return a consistent envelope for 422 validation failures."""
-    logger.info("Request validation failed on %s: %s", request.url.path, exc.errors())
+@app.exception_handler(AppError)
+async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=exc.status_code,
         content={
             "status": "error",
-            "code": "validation_error",
-            "message": "Request body failed validation",
-            "errors": exc.errors(),
-        },
+            "code": exc.code,
+            "message": exc.message,
+        }
     )
 
 

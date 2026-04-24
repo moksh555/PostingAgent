@@ -1,6 +1,12 @@
-from pydantic import BaseModel, ConfigDict, Field  # type: ignore
-from datetime import datetime
+from __future__ import annotations
 
+from datetime import datetime
+from pydantic import BaseModel, ConfigDict, Field  # type: ignore
+
+class APIResponse(BaseModel):
+    status: str = Field(..., description="ok | error")
+    state: str = Field(..., description="Human-readable message")
+    body: dict | AgentRunResponseCompleted = Field(..., description="The body of the response")
 
 class AgentRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -23,13 +29,18 @@ class AgentRunRequest(BaseModel):
     )
 
 
-class AgentRunResponse(BaseModel):
+class AgentRunResponseCompleted(BaseModel):
     status: str = Field(..., description="ok | error")
-    message: str = Field(..., description="Human-readable message")
-    numberOfPosts: int = Field(..., description="Echo of the requested post count")
-    startDate: datetime = Field(..., description="Echo of the requested start date")
+    state: str = Field(..., description="Human-readable message")
+    threadId: str = Field(..., description="The thread ID of the campaign")
+    posts: list[AgentPost] = Field(..., description="The posts of the campaign")
+    url: str = Field(..., description="The URL of the campaign")
+    numberOfPosts: int = Field(..., description="The number of posts of the campaign")
+    startDate: datetime = Field(..., description="The start date of the campaign")
+    userId: str = Field(..., description="The user ID of the campaign")
+    draft: LLMPostGeneration | None = Field(default=None, description="The draft of the post")
 
-
+    
 class AgentSummary(BaseModel):
     marketingBrief: str = Field(
         ...,

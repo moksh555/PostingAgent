@@ -15,6 +15,7 @@ from configurations.config import config
 from app.errorsHandler.errors import (
     NoPayloadError,
     NoURLError,
+    NoUserIdError,
     NoNumberOfPostsError,
     NoStartDateError,
     FailedToBuildMarketingBriefError,
@@ -84,6 +85,16 @@ def receiverNode(state: AgentState):
     payload = state.get("payload")
     if payload is None:
         raise NoPayloadError("No payload found during Agentic RAG Flow")
+    elif payload.userId is None:
+        raise NoUserIdError("No user ID found during Agentic RAG Flow")
+    elif payload.url is None:
+        raise NoURLError("No URL found during Agentic RAG Flow")
+    elif payload.numberOfPosts is None:
+        raise NoNumberOfPostsError("No number of posts found during Agentic RAG Flow")
+    elif payload.startDate is None:
+        raise NoStartDateError("No start date found during Agentic RAG Flow")
+    else:
+        return {"payload": payload}
 
 
 def buildingMarketingBrief(state: AgentState):

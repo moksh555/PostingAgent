@@ -36,6 +36,13 @@ class NoURLError(AppError):
     message = "URL is required but was empty"
 
 
+class NoUserIdError(AppError):
+    """Raised when the request has no user ID where one is required."""
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "no_user_id"
+    message = "User ID is required but was empty"
+
 class NoNumberOfPostsError(AppError):
     """Raised when the request has no number of posts where one is required."""
 
@@ -73,7 +80,7 @@ class FailedToBuildPosts(AppError):
 
     status_code = status.HTTP_400_BAD_REQUEST
     code = "failed_to_build_marketing_brief"
-    message = "Failed to build marketing brief"
+    message = "Failed to build posts"
 
 
 class FailedToWriteSummaryToS3(AppError):
@@ -90,3 +97,17 @@ class FailedToSaveFinalPostData(AppError):
     status_code = status.HTTP_400_BAD_REQUEST
     code = "failed_to_save_final_post_data"
     message = "Failed to save final post data"
+
+class FailedToStartAgent(AppError):
+    """Raised when the agent fails to start"""
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "failed_to_start_agent"
+    message = "Failed to start agent"
+
+class FailedToResumeAgent(AppError):
+    """Raised when the agent fails to resume"""
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "failed_to_resume_agent"
+    message = "Failed to resume agent"

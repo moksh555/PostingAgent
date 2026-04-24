@@ -3,7 +3,7 @@ import logging
 from fastapi import APIRouter, HTTPException, status  # type: ignore
 from pydantic import ValidationError  # type: ignore
 
-from app.models.AgentModels import AgentRunRequest, AgentRunResponse
+from app.models.AgentModels import AgentRunRequest, AgentRunResponseCompleted
 from app.services.AgentServices import AgentServices
 from fastapi.responses import StreamingResponse  # type: ignore
 from app.api.depends.servicesDepends import get_agent_services
@@ -12,8 +12,8 @@ agent_services = AgentServices()
 
 
 @router.post(
-    "/runAgent",
-    response_model=AgentRunResponse,
+    "/startAgent",
+    response_model=AgentRunResponseCompleted,
     status_code=status.HTTP_200_OK,
 )
 async def run_agent(payload: AgentRunRequest):
@@ -22,11 +22,11 @@ async def run_agent(payload: AgentRunRequest):
     Args:
         payload: AgentRunRequest
     Returns:
-        AgentRunResponse
+        Streamed NDJSON (APIResponse); final `state=result` body matches AgentRunResponseCompleted when the run finishes or pauses.
     """
     try:
         return StreamingResponse(
-            agent_services.runAgent(
+            agent_services.startRun(
                 payload=payload,
             )
         )
