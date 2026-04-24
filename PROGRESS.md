@@ -1021,20 +1021,67 @@ Two small chores that had been piling up:
   truth, no `__all__` to keep in sync.
 
 
+## Stage 35 — Dependency modules and breaking the import cycle
+
+The stack hit a **circular import** once `app.services.agentGraph`
+imported `get_postgres_repository` (or equivalent) from a module that
+also imported `AgentServices`, while `AgentServices` imports
+`workflow` from `agentGraph`. Python then failed with *partially
+initialized module* errors at startup.
+
+**Fix — separate concerns and keep graph imports acyclic:**
+
+- **`app/api/depends/repositoryDepends.py`** — two `@lru_cache(maxsize=1)`
+  factories, each returning a `PostgreSQLRepository`:
+  - `get_postgres_repository_checkpointer()` — its `ConnectionPool`
+    backs `PostgresSaver` for LangGraph checkpoints (wired in
+    `AgentServices.__init__` via `PostgresSaver(self.conn, serde=SERDE)`
+    and `repository.setup(self.checkpointer)`).
+  - `get_postgres_repository_posts()` — used only from
+    `saveDataToDatabase` in `agentGraph.py` for
+    `saveFinalPostDataExecuteMany` into the `posts` table.
+
+  This module imports **only** `PostgreSQLRepository` from
+  `app.repository.postgreSQL` — no `AgentServices`, no `agentGraph` —
+  so it is safe for `agentGraph` to import from it.
+
+- **`app/api/depends/servicesDepends.py`** — `get_agent_services()`
+  returns a cached `AgentServices()` (no repository argument; the
+  service pulls the checkpointer repo internally). FastAPI routes import
+  this, not `AgentServices` directly.
+
+**Trade-off:** two cached factories means **two** `PostgreSQLRepository`
+instances and thus **two** connection pools to the same Neon URI
+unless later collapsed to a single shared `get_postgres_repository()`.
+That was accepted for clarity between checkpoint I/O and app-table
+inserts; it is **not** required for import hygiene — a single pool would
+also work if all code paths shared one `repository.conn`.
+
+**API wiring:** `POST /api/v1/runAgent` uses
+`StreamingResponse(get_agent_services().startRun(payload=...))` so the
+client receives streamed node-update JSON lines plus the final client
+view via the generator contract described in Stage 31.
+
+
 ## What the system does end-to-end today
 
-1. Client `POST /api/v1/runAgent` with `{url, numberOfPosts, startDate}`.
+1. Client `POST /api/v1/runAgent` with `{userId, url, numberOfPosts, startDate}`.
 2. FastAPI validates the body → `AgentRunRequest`.
-3. `AgentServices.runAgent` compiles and invokes the LangGraph with a
-   stable `thread_id` so the checkpointer can pause / resume across
-   interrupts.
+3. `get_agent_services().startRun(payload)` streams the compiled LangGraph
+   with a stable `thread_id` so the checkpointer can pause / resume across
+   interrupts; the HTTP layer returns a `StreamingResponse` over that
+   generator.
 4. **Validating_Payload** — sanity-checks the payload (redundant with the
    FastAPI boundary, useful for direct-invocation tests).
-5. **Building_Marketing_Brief** — Gemini in a continuation loop produces
-   a 12-section brief; `writeSummaryToS3` persists it to
-   `s3://<AWS_BUCKET_NAME>/UserNotes/<fileName>` via the `S3Connection`
-   wrapper. S3 write failures surface as `FailedToWriteSummaryToS3`,
-   distinct from LLM-side `FailedToBuildMarketingBriefError`.
+5. **Building_Marketing_Brief** — Gemini produces the structured
+   `AgentSummary`; the node returns it in state as **`notes`**
+   (downstream post generation reads `notes.marketingBrief`). The brief
+   body is also uploaded with `writeSummaryToS3` to
+   `s3://<AWS_BUCKET_NAME>/UserNotes/.../fileName` via `S3Connection`.
+   S3 write failures → `FailedToWriteSummaryToS3`; include
+   `AgentSummary` in `JsonPlusSerializer(allowed_msgpack_modules=[...])`
+   so checkpoint resume does not turn `notes` into an opaque `dict`
+   (see Stage 28).
 6. **Drafting_And_Reviewing_Posts** — state machine; one step per
    invocation:
    - **Produce step** (cache miss): chain the generation prompt with
@@ -1042,10 +1089,13 @@ Two small chores that had been piling up:
      `cacheDraft`, return. Router loops back for the review step.
    - **Review step** (cache hit): `interrupt(...)` pauses with
      `{postContent, publishDate, actions: [Accept, Reject, Regenerate]}`.
-7. Client resumes via `Command(resume=AgentPostGenerationInterrupt(...))`:
+7. Client resumes (e.g. from `tests/simulateRun.py` or a future
+   `/runAgent/.../decide` route) via
+   `Command(resume=AgentPostGenerationInterrupt(...))`:
    - **Accept** — append `AgentPost`, clear `cacheDraft`, increment
      `currentLoopStartNumber`, reset failure flags. Router loops back if
-     more posts are needed; otherwise `END`.
+     more posts are needed; otherwise routes to `Saving_Data_To_Database`
+     when the campaign is complete.
    - **Reject** — clear `cacheDraft`, increment
      `currentLoopStartNumber`, reset failure flags. (Reject = skip this
      slot; delivers fewer posts than requested.)
@@ -1063,14 +1113,29 @@ Two small chores that had been piling up:
    attempts exhaust, the exception bubbles up to the caller rather than
    silently landing an empty slot.
 10. Every checkpoint is persisted to **Neon Postgres** via
-    `PostgresSaver`, so a run paused at `interrupt(...)` survives a
+    `PostgresSaver` (pooled through the checkpointer-side repository from
+    Stage 35), so a run paused at `interrupt(...)` survives a
     process restart and can be resumed hours later using the same
     `thread_id`.
-11. Returns `posts: list[AgentPost]`.
+11. **Saving_Data_To_Database** — final node: `writeSummaryToS3` for
+    notes, then `get_postgres_repository_posts()`.
+    `saveFinalPostDataExecuteMany(...)` into the `posts` table
+    (Neon, same URI, separate connection pool from the checkpointer
+    in the current two-factory design).
+12. The service layer surfaces accepted posts as JSON (see
+    `_buildClientView`); the HTTP stream ends with the completed client
+    view when the graph reaches `END`.
 
 
 ## Lessons worth keeping
 
+- **Dependency direction kills circular imports.** A graph module
+  must not import a package that eventually imports the graph (e.g.
+  `from app.api.depends import X` if `depends` loads `AgentServices` →
+  `agentGraph`). Keep DB singletons in **leaf** modules
+  (`app.repository.*` or `repositoryDepends` that import only
+  `PostgreSQLRepository`) and have `agentGraph` import from there;
+  use `servicesDepends` at the FastAPI boundary for `get_agent_services`.
 - **Let the framework validate at the boundary.** Pydantic at FastAPI +
   `extra="forbid"` makes "bad request" cases free.
 - **Custom exceptions pay for themselves** as soon as you need consistent
