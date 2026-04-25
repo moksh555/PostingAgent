@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, HTTPException, status  # type: ignore
+from fastapi import APIRouter, HTTPException, status, Depends  # type: ignore
 from pydantic import ValidationError  # type: ignore
 
 from app.models.AgentModels import AgentRunRequest, AgentRunResponseCompleted
@@ -16,7 +16,10 @@ agent_services = AgentServices()
     response_model=AgentRunResponseCompleted,
     status_code=status.HTTP_200_OK,
 )
-async def run_agent(payload: AgentRunRequest):
+async def run_agent(
+    payload: AgentRunRequest,
+    agentServices: AgentServices = Depends(get_agent_services),
+    ):
     """
     Run the agent with the given payload
     Args:
@@ -24,19 +27,9 @@ async def run_agent(payload: AgentRunRequest):
     Returns:
         Streamed NDJSON (APIResponse); final `state=result` body matches AgentRunResponseCompleted when the run finishes or pauses.
     """
-    try:
-        return StreamingResponse(
-            agent_services.startRun(
-                payload=payload,
-            )
-        )
-    except ValidationError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        ) from e
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
-        ) from e
+    return StreamingResponse(
+        agentServices.startRun(
+            payload=payload,
+        ),
+        media_type="application/x-ndjson",
+    )

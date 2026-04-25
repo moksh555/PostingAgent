@@ -28,6 +28,9 @@ class AgentRunRequest(BaseModel):
         description="The ISO-8601 start date of the campaign",
     )
 
+class AgentResumeRunRequest(BaseModel):
+    threadId: str = Field(..., description="The thread ID of the campaign")
+    decision: AgentPostGenerationInterrupt = Field(..., description="The decision to take on the post")
 
 class AgentRunResponseCompleted(BaseModel):
     status: str = Field(..., description="ok | error")

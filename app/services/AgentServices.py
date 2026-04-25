@@ -12,7 +12,8 @@ from app.models.AgentModels import (
     AgentPostGenerationInterrupt,
     AgentRunRequest,
     AgentRunResponseCompleted,
-    APIResponse
+    APIResponse,
+    AgentResumeRunRequest,
 )
 from app.models.healthCheckModel import HealthCheckModel
 from langgraph.checkpoint.postgres import PostgresSaver # type: ignore
@@ -28,6 +29,7 @@ class AgentServices:
             ("app.models.AgentModels", "AgentSummary"),
             ("app.models.AgentModels", "LLMPostGeneration"),
             ("app.models.AgentModels", "AgentPost"),
+            ('app.models.AgentModels', 'AgentPostGenerationInterrupt'),
         ],
     )
     
@@ -64,14 +66,14 @@ class AgentServices:
                             status="ok",
                             state="updates",
                             body={"node": node_name},
-                        ).model_dump_json()
+                        ).model_dump_json() + "\n"
 
             finalView = self._buildClientView(self.graph, threadId, config)
             yield APIResponse(
                 status="ok",
                 state="result",
                 body=finalView,
-            ).model_dump_json()
+            ).model_dump_json() + "\n"
         except AppError:
             raise
         except Exception as e:
@@ -79,15 +81,14 @@ class AgentServices:
 
     def resumeRun(
         self,
-        threadId: str,
-        decision: AgentPostGenerationInterrupt,
+        payload: AgentResumeRunRequest,
     ):
 
         try:        
-            config = {"configurable": {"thread_id": threadId}}
+            config = {"configurable": {"thread_id": payload.threadId}}
 
             for chunk in self.graph.stream(
-                Command(resume=decision),
+                Command(resume=payload.decision),
                 config=config,
                 stream_mode="updates",
                 version="v2",
@@ -99,14 +100,14 @@ class AgentServices:
                             status="ok",
                             state="updates",
                             body={"node": node_name},
-                        ).model_dump_json()
+                        ).model_dump_json() + "\n"
 
-            finalView = self._buildClientView(self.graph, threadId, config)
+            finalView = self._buildClientView(self.graph, payload.threadId, config)
             yield APIResponse(
                 status="ok",
                 state="result",
                 body=finalView,
-            ).model_dump_json()
+            ).model_dump_json() + "\n"
         except AppError:
             raise
         except Exception as e:

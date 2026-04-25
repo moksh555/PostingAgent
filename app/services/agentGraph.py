@@ -1,5 +1,7 @@
+import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from typing_extensions import TypedDict  # type: ignore
 
@@ -53,9 +55,6 @@ structuredPostGenerationLLM = PostGenerationLLM.with_structured_output(
 )
 
 
-
-
-
 class AgentState(TypedDict):
     payload: AgentRunRequest
     notes: AgentSummary
@@ -93,8 +92,6 @@ def receiverNode(state: AgentState):
         raise NoNumberOfPostsError("No number of posts found during Agentic RAG Flow")
     elif payload.startDate is None:
         raise NoStartDateError("No start date found during Agentic RAG Flow")
-    else:
-        return {"payload": payload}
 
 
 def buildingMarketingBrief(state: AgentState):
@@ -137,7 +134,8 @@ def generatingMarketingPosts(state: AgentState):
     cacheDraft = state.get("cacheDraft")
 
     try:
-        for _ in range(currentLoopStartNumber, numberOfPosts):
+        for loop_i in range(currentLoopStartNumber, numberOfPosts):
+            post_slot = loop_i + 1  # 1-based post number in campaign
             if cacheDraft is not None:
                 postGenerated = cacheDraft
             else:
@@ -150,7 +148,7 @@ def generatingMarketingPosts(state: AgentState):
 
                 chain = prompt | structuredPostGenerationLLM
 
-                postIndex = currentLoopStartNumber + 1
+                postIndex = post_slot
                 previousPostsSummary = (
                     "\n".join(
                         f"- Post {p.postNumber}: {p.content[:140]}..." for p in postList
@@ -253,6 +251,9 @@ def regeneratePost(state: AgentState):
     postGenerateSystemPrompt = POST_REGENERATION_PROMPT
     postsList = state.get("posts") or []
     cacheDraft = state.get("cacheDraft")
+    number_of_posts = payload.numberOfPosts
+    reg_slot = len(postsList) + 1
+    _reg_loop = f"loop {reg_slot}/{number_of_posts}"
 
     prompt = ChatPromptTemplate.from_messages(
         [
@@ -329,6 +330,11 @@ def regeneratePost(state: AgentState):
                 "postToRegenerate": None,
                 "cacheDraft": None,
             }
+        else:
+            raise FailedToBuildPosts(
+                f"Invalid action received: {answer.actions!r}. "
+                f"Expected one of: 'Accept', 'Reject', 'Regenerate'"
+            )
     except GraphInterrupt:
         raise
     except FailedToBuildPosts:
@@ -409,19 +415,22 @@ workflow.add_node(
 
 def routingGneratePostsNode(state: AgentState):
     if state.get("regeneratePost"):
-        return "Regenerating_With_Feedback"
+        nxt = "Regenerating_With_Feedback"
     elif (state.get("currentLoopStartNumber") or 0) < state.get(
         "payload"
     ).numberOfPosts:
-        return "Drafting_And_Reviewing_Posts"
+        nxt = "Drafting_And_Reviewing_Posts"
     else:
-        return "Saving_Data_To_Database"
+        nxt = "Saving_Data_To_Database"
+    return nxt
 
 
 def routingReGneratePostsNode(state: AgentState):
     if not state.get("regeneratePost"):
-        return "Drafting_And_Reviewing_Posts"
-    return "Regenerating_With_Feedback"
+        nxt = "Drafting_And_Reviewing_Posts"
+    else:
+        nxt = "Regenerating_With_Feedback"      
+    return nxt
 
 
 workflow.add_edge(START, "Validating_Payload")
