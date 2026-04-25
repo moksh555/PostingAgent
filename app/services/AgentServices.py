@@ -1,4 +1,3 @@
-import json
 import uuid
 from typing import Any
 
@@ -9,7 +8,6 @@ from app.errorsHandler.errors import (
     )
 from langgraph.types import Command  # type: ignore
 from app.models.AgentModels import (
-    AgentPostGenerationInterrupt,
     AgentRunRequest,
     AgentRunResponseCompleted,
     APIResponse,

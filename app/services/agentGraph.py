@@ -1,13 +1,12 @@
 import json
 from datetime import datetime
+from operator import add
 from pathlib import Path
-from typing import Any
 
-from typing_extensions import TypedDict  # type: ignore
+from typing_extensions import TypedDict, Annotated  # type: ignore
 
 from langchain_core.prompts import ChatPromptTemplate  # type: ignore
 from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
-from langgraph.checkpoint.memory import InMemorySaver  # type: ignore
 from langgraph.runtime import Runtime  # type: ignore
 from langgraph.errors import GraphInterrupt  # type: ignore
 from langgraph.graph import StateGraph, START, END  # type: ignore
@@ -58,7 +57,7 @@ structuredPostGenerationLLM = PostGenerationLLM.with_structured_output(
 class AgentState(TypedDict):
     payload: AgentRunRequest
     notes: AgentSummary
-    posts: list[AgentPost]
+    posts: Annotated[list[AgentPost], add]
     regeneratePost: bool
     postRegenerationDescription: str
     postToRegenerate: LLMPostGeneration
@@ -196,7 +195,6 @@ def generatingMarketingPosts(state: AgentState):
 
                 return {
                     "cacheDraft": postGenerated,
-                    "posts": postList,
                 }
 
             answer: AgentPostGenerationInterrupt = interrupt(
@@ -208,16 +206,15 @@ def generatingMarketingPosts(state: AgentState):
             )
 
             if answer.actions == "Accept":
-                postList.append(
-                    AgentPost(
+                acceptedPosts = AgentPost(
                         content=postGenerated.content,
                         publishDate=postGenerated.publishDate,
                         platform="LinkedIn",
                         postNumber=len(postList) + 1,
                     )
-                )
-                return {
-                    "posts": postList,
+                
+                return {    
+                    "posts": [acceptedPosts],
                     "cacheDraft": None,
                     "currentLoopStartNumber": currentLoopStartNumber + 1,
                 }
@@ -308,16 +305,14 @@ def regeneratePost(state: AgentState):
                 "cacheDraft": None,
             }
         elif answer.actions == "Accept":
-            postsList.append(
-                AgentPost(
+            acceptedPosts = AgentPost(
                     content=postReGenerated.content,
                     publishDate=postReGenerated.publishDate,
                     platform="LinkedIn",
                     postNumber=len(postsList) + 1,
                 )
-            )
             return {
-                "posts": postsList,
+                "posts": [acceptedPosts],
                 "regeneratePost": False,
                 "postRegenerationDescription": "",
                 "postToRegenerate": None,

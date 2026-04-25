@@ -1,12 +1,12 @@
-import logging
 
-from fastapi import APIRouter, HTTPException, status, Depends  # type: ignore
-from pydantic import ValidationError  # type: ignore
+from fastapi import APIRouter, status, Depends, HTTPException  # type: ignore
 
 from app.models.AgentModels import AgentRunRequest, AgentRunResponseCompleted
 from app.services.AgentServices import AgentServices
 from fastapi.responses import StreamingResponse  # type: ignore
 from app.api.depends.servicesDepends import get_agent_services
+from app.errorsHandler.errors import AppError
+
 router = APIRouter()
 agent_services = AgentServices()
 
@@ -16,7 +16,7 @@ agent_services = AgentServices()
     response_model=AgentRunResponseCompleted,
     status_code=status.HTTP_200_OK,
 )
-async def run_agent(
+def run_agent(
     payload: AgentRunRequest,
     agentServices: AgentServices = Depends(get_agent_services),
     ):
@@ -27,9 +27,16 @@ async def run_agent(
     Returns:
         Streamed NDJSON (APIResponse); final `state=result` body matches AgentRunResponseCompleted when the run finishes or pauses.
     """
-    return StreamingResponse(
-        agentServices.startRun(
-            payload=payload,
-        ),
-        media_type="application/x-ndjson",
-    )
+    try:
+        return StreamingResponse(
+            agentServices.startRun(
+                payload=payload,
+            ),
+            media_type="application/x-ndjson",
+        )
+    except AppError as e:
+        print("Endpoint: startAgent Error")
+        raise HTTPException(status_code=500, detail=e.message)
+    except Exception as e:
+        print("Endpoint: startAgent Exception")
+        raise HTTPException(status_code=500, detail=e.message)
