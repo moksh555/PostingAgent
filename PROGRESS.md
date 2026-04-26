@@ -1216,6 +1216,64 @@ instance from `create()` is valid for runs.
 | Singleton repos / service               | `app/api/depends/repositoryDepends.py`, `servicesDepends.py` |
 | HTTP stream                             | `app/api/version1/startAgent.py`, `resumeAgent.py`           |
 | Python version                          | `pyproject.toml` (`requires-python >= 3.11`)                 |
+| S3 I/O (async) + LLM tools              | `app/repository/s3connection.py`, `app/tools/s3Tools.py`   |
+
+
+## Stage 38 — S3 as per-user “memory”: LangChain tools and key layout
+
+**Goal:** let the **marketing-brief** and **post-generation** models pull (and, where
+exposed, write) user-scoped content in S3 without hard-coded graph nodes that
+always pre-fetch the same files. The model decides **when** to call tools based
+on `detailedDescription`’s “Context & Memory” instructions and the per-step
+user message.
+
+**S3 namespace (convention, documented in tool docstrings in
+`app/tools/s3Tools.py`):**
+
+- Prefix: **`UserNotes/{userId}/`**
+- **`knowledge/previous_summary.txt`** — long-lived summary of past campaign /
+  product notes (used as continuity; do not blindly repeat when extending).
+- **`knowledge/feedback_summary.txt`** — aggregated human feedback on past
+  posts (align naming with tools and any writers; older code may have used
+  a different filename — keep tools and graph writers in sync).
+- **`{fileName}.txt` at the user root** (e.g. a slug the model picks for
+  `AgentSummary.fileName`) — **marketing brief** artefact for a run, same
+  pattern as `S3Connection.writeSummaryToS3`.
+
+**Tools (LangChain `@tool` async functions) in this stage:**
+
+- **`get_file_content_S3(key: str)`** — read UTF-8 text; **`key` is the full S3
+  object key** (including `UserNotes/{userId}/...`). The model must pass a key
+  that encodes the correct `userId` segment (the marketing prompt injects
+  `user_id` for this).
+- **`check_if_file_exists_S3(key: str)`** — boolean, same key rules.
+- **`write_file_to_S3(body: str, key: str)`** — **exists** in `s3Tools.py` for
+  optional writes; the current graph only **`bind_tools([get_file_content_S3,
+  check_if_file_exists_S3])`** on the brief and post chains — add `write_file_to_S3`
+  to `bind_tools(...)` if the product should let the model persist aux files.
+
+**Graph wiring in `app/services/agentGraph.py`:**
+
+- `strcturedSummaryWithTool` = `structuredSummaryLLM.bind_tools([get_file_content_S3,
+  check_if_file_exists_S3])` — used in **`buildingMarketingBrief`** via
+  `ainvoke` (not the unbound `structuredSummaryLLM` only).
+- `structuredPostGenerationLLMWithTool` — same tool pair bound for
+  **`generatingMarketingPosts`** (and the same pattern can apply wherever the
+  post chain is built).
+- **`MARKETING_BRIEF_PROMPT`** now formats **`{user_id}`** and instructs the
+  model to use the tools to discover prior S3 context before writing the
+  structured `AgentSummary`.
+
+**State note:** `AgentState` still includes optional slots like
+`previousNotesSummary` and `feedbackSummary` for forward compatibility; the
+**current** flow emphasized in this stage loads knowledge **via tool calls
+inside the LLM step** rather than separate “preload” graph nodes. If you add
+dedicated nodes again, either populate those keys or remove them from
+`TypedDict` to avoid confusion.
+
+**Infrastructure:** `S3Connection` uses **aioboto3**; **`get_s3_connection()`** in
+`app/api/depends/repositoryDepends.py` returns a process-wide singleton, same
+idea as the Postgres repos.
 
 ## What the system does end-to-end today
 
@@ -1228,25 +1286,25 @@ instance from `create()` is valid for runs.
    wrapping the async generator in `StreamingResponse` alone.
 4. **Validating_Payload** — sanity-checks the payload (redundant with the
    FastAPI boundary, useful for direct-invocation tests).
-5. **Building_Marketing_Brief** — Gemini produces the structured
-   `AgentSummary`; the node returns it in state as **`notes`**
-   (downstream post generation reads `notes.marketingBrief`). The brief
-   body is also uploaded with `writeSummaryToS3` to
-   `s3://<AWS_BUCKET_NAME>/UserNotes/.../fileName` via `S3Connection`.
-   S3 write failures → `FailedToWriteSummaryToS3`; include
-   `AgentSummary` in `JsonPlusSerializer(allowed_msgpack_modules=[...])`
-   so checkpoint resume does not turn `notes` into an opaque `dict`
-   (see Stage 28).
+5. **Building_Marketing_Brief** — The LLM is **`bind_tools`’d** with
+   `get_file_content_S3` and `check_if_file_exists_S3` (Stage 38). The prompt
+   (`MARKETING_BRIEF_PROMPT`, with `{user_id}`) steers the model to probe
+   `UserNotes/{userId}/knowledge/...` and any prior brief files **before** emitting
+   structured `AgentSummary` as **`notes`**. The same brief is written to
+   `UserNotes/{userId}/{fileName}` in **Saving_Data_To_Database** via
+   `writeSummaryToS3` when the campaign completes. Serde: include
+   `AgentSummary` in `JsonPlusSerializer(allowed_msgpack_modules=[...])` (Stage 28).
 6. **Drafting_And_Reviewing_Posts** — state machine; one step per
    invocation:
-   - **Produce step** (cache miss): chain the generation prompt with
-     `LLMPostGeneration` structured output, validate, write draft to
+   - **Produce step** (cache miss): the post chain can use the same S3
+     **read/exists** tools (`structuredPostGenerationLLMWithTool`) plus structured
+     `LLMPostGeneration`, then validate, write draft to
      `cacheDraft`, return. Router loops back for the review step.
    - **Review step** (cache hit): `interrupt(...)` pauses with
      `{postContent, publishDate, actions: [Accept, Reject, Regenerate]}`.
-7. Client resumes via `POST /api/v1/resumeAgent` (body includes `threadId`
-   and the interrupt decision) or from scripts; the service passes
-   `Command(resume=AgentPostGenerationInterrupt(...))` into the graph:
+7. Client resumes via `POST /api/v1/resumeAgent` (body:
+   `AgentResumeRunRequest` with `threadId` + `decision`); the service passes
+   `Command(resume=payload.decision)` into the graph:
    - **Accept** — append `AgentPost`, clear `cacheDraft`, increment
      `currentLoopStartNumber`, reset failure flags. Router loops back if
      more posts are needed; otherwise routes to `Saving_Data_To_Database`
@@ -1421,3 +1479,13 @@ stop: stop.value` pattern, not a plain `for` loop. If you're
   async generator consumed on the event loop without thread-pool bridging
   (see Stage 37). Confirm client expectations: NDJSON-in-chunks vs strict
   `data:` SSE framing.
+- **`bind_tools` is not automatic** — the graph must use the
+  *tool-bound* chat model in `ainvoke` (e.g. `strcturedSummaryWithTool`), not
+  the plain `with_structured_output` instance alone, or tool calls never run.
+- **S3 tool `key` args:** document **full** keys
+  `UserNotes/{userId}/…` in tool docstrings; keep bucket writes (e.g. brief
+  filename) and tool examples aligned on spelling (`feedback_summary` vs
+  legacy typos) so reads and writes hit the same object.
+- **`write_file_to_S3` in `s3Tools.py`:** opt-in — add to `bind_tools([...])`
+  if the product should allow the model to persist ad-hoc files, and gate in
+  the prompt to prevent destructive overwrites.
