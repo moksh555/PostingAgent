@@ -1,11 +1,11 @@
-from fastapi import APIRouter, HTTPException, status, Depends # type: ignore
+from fastapi import APIRouter, status, Depends  # type: ignore
 from app.models.AgentModels import (
     AgentResumeRunRequest,
     )
 from fastapi.sse import EventSourceResponse # type: ignore
 from app.services.AgentServices import AgentServices
 from app.api.depends.servicesDepends import get_agent_services
-from fastapi.responses import StreamingResponse # type: ignore
+
 router = APIRouter()
 
 
@@ -22,7 +22,7 @@ async def resume_agent(
     """
     Resume the agent with the given payload
     Args:
-        payload: AgentPostGenerationInterrupt
+        payload: AgentResumeRunRequest (threadId + decision)
     Returns:
         Streamed NDJSON (APIResponse); final `state=result` body matches AgentRunResponseCompleted when the run finishes or pauses.
     """

@@ -1,9 +1,8 @@
 # Marketing Agent — Build Progress
 
 A running log of how this project was built, in the order it actually happened.
-Each milestone includes the *why* behind the decision, the main files touched,
+Each milestone includes the _why_ behind the decision, the main files touched,
 and any errors that shaped the design.
-
 
 ## Stage 0 — Environment & tooling
 
@@ -30,7 +29,6 @@ and any errors that shaped the design.
 
 - `pyproject.toml` + `uv sync` handles the dependency tree.
 
-
 ## Stage 1 — FastAPI skeleton
 
 - Created `main.py` with a titled FastAPI app (`title="Marketing Agent API"`,
@@ -41,7 +39,6 @@ and any errors that shaped the design.
 - First working endpoint: **`GET /api/v1/healthChecks/live`** returning a
   Pydantic `HealthCheckModel`. That gave me something to hit with curl to
   confirm the server boots and import paths are wired correctly.
-
 
 ## Stage 2 — Request / response contract
 
@@ -54,7 +51,6 @@ and any errors that shaped the design.
 - Decided to let **FastAPI + Pydantic handle request-layer validation
   automatically**: empty body, missing fields, wrong types, and out-of-range
   `numberOfPosts` all become 422 without extra code.
-
 
 ## Stage 3 — Custom error system
 
@@ -69,21 +65,19 @@ and any errors that shaped the design.
   error returns the same `{"status", "code", "message"}` envelope.
 - Also added a `RequestValidationError` handler for consistent 422 envelopes.
 
-
 ## Stage 4 — Wiring the `/runAgent` endpoint
 
 - `app/api/version1/runAgent.py` now accepts a typed `payload: AgentRunRequest`
   and delegates to `AgentServices.runAgent(...)`.
 - Exception mapping inside the route:
-  - `ValueError`              → 400
-  - `TimeoutError`            → 504
-  - `ConnectionError`         → 502
+  - `ValueError` → 400
+  - `TimeoutError` → 504
+  - `ConnectionError` → 502
   - Pydantic `ValidationError` → 500 (this is an internal bug, not a client
     problem — the request already passed validation at the boundary)
-  - catch-all `Exception`     → 500
+  - catch-all `Exception` → 500
 - `AgentServices` initially returned a stub response so I could integration-test
   the HTTP layer before plugging in the real agent.
-
 
 ## Stage 5 — Configuration & secrets
 
@@ -96,7 +90,6 @@ and any errors that shaped the design.
 - Hit a classic Pydantic-Settings gotcha: if the field is named
   `GOOGLE_API_KEY` but the `.env` has `GEMINI_API_KEY`, Settings will raise
   `Field required`. Reconciled the two names.
-
 
 ## Stage 6 — LangGraph scaffold
 
@@ -113,7 +106,6 @@ and any errors that shaped the design.
 - Attached an `InMemorySaver` checkpointer so the graph can pause at
   `interrupt(...)` and resume later with the same `thread_id`.
 
-
 ## Stage 7 — The first node: `receiverNode`
 
 - Validates the payload and forwards it. Redundant with Pydantic validation at
@@ -124,7 +116,6 @@ and any errors that shaped the design.
     LangGraph may pass a partial state.
   - `payload.get("url")` — wrong, `payload` is a Pydantic model not a dict.
     Attribute access: `payload.url`.
-
 
 ## Stage 8 — Marketing brief generation (`buildingMarketingBrief`)
 
@@ -140,7 +131,6 @@ and any errors that shaped the design.
 - Filename is generated deterministically from the URL via
   `_slugify_url_to_filename(url)`; keeps the `testSummary/` folder clean.
 
-
 ## Stage 9 — Continuation loop for long-form generation
 
 - Problem: Gemini sometimes hits `max_output_tokens` mid-brief and truncates.
@@ -155,7 +145,6 @@ and any errors that shaped the design.
 - Trade-off: plain-text output for the brief body, structured output only
   for the filename. Two calls, but reliable length.
 
-
 ## Stage 10 — Writing the brief to disk
 
 - `writeSummaryToFile(response)` lives at
@@ -163,7 +152,6 @@ and any errors that shaped the design.
 - Found that Gemini's structured output sometimes **double-escapes** `\n`
   and `\t` (they arrive as literal `\\n`). Added string replacements to
   normalise before writing.
-
 
 ## Stage 11 — Post generation prompt
 
@@ -186,14 +174,12 @@ and any errors that shaped the design.
      context, and fewer brace-escaping issues if the brief contains `{` or
      `}`.
 
-
 ## Stage 12 — Post generation node (`generatingMarketingPosts`)
 
 - Uses `ChatPromptTemplate.from_messages([("system", ...), ("human", ...)])`
   chained with a structured-output LLM bound to `LLMPostGeneration`.
 - Iterates `numberOfPosts` times, and after each LLM call pauses the graph
   via `interrupt(...)` so the user can Accept / Reject / Regenerate.
-
 
 ## Stage 13 — Human-in-the-loop with `interrupt`
 
@@ -205,7 +191,7 @@ actually pauses:
    My generic `try/except Exception` was catching it first and re-wrapping
    it as `FailedToBuildPosts`, so the graph never paused — it errored.
 
-   Fix: add an explicit passthrough *above* the catch-all:
+   Fix: add an explicit passthrough _above_ the catch-all:
 
    ```python
    except GraphInterrupt:
@@ -227,10 +213,9 @@ actually pauses:
    checkpointer finds the paused run.
 
 4. **`Field(..., default="", ...)` is a TypeError.** In Pydantic v2, the
-   first positional arg *is* the default; `...` is the sentinel for
+   first positional arg _is_ the default; `...` is the sentinel for
    "required". Can't combine them. Fix:
    `postChangeDescription: str = Field(default="", description="...")`.
-
 
 ## Stage 14 — Git & `.gitignore`
 
@@ -243,7 +228,6 @@ actually pauses:
   - IDE folders (`.vscode/`, `.idea/`, `.cursor/`)
   - `testSummary/` (runtime artefacts, not source)
 - Kept `uv.lock` tracked — reproducible installs.
-
 
 ## Stage 15 — Running the module correctly
 
@@ -259,17 +243,16 @@ actually pauses:
   `python -m` puts the cwd (`Backend/`) on `sys.path`, so both `app.*` and
   `configurations.*` resolve.
 
-
 ## Stage 16 — Observability (planned)
 
 Shortlist for the next iteration:
+
 - Replace `print(...)` with Python `logging` for timestamped, level-aware
   logs.
 - Switch `graph.invoke()` → `graph.stream(stream_mode="updates")` to see
   each node boundary in real time.
 - Add **LangSmith** tracing (`LANGSMITH_TRACING=true`) for a proper waterfall
   of node / LLM / token / interrupt events.
-
 
 ## Stage 17 — A second prompt for regeneration
 
@@ -293,7 +276,6 @@ Shortlist for the next iteration:
 - Other hard rules: the brief remains the single source of truth (no
   inventing facts even on regen), respect the brand AVOID list from the
   brief, no emojis unless the brief's tone section allows them.
-
 
 ## Stage 18 — Splitting generation into a two-node regen architecture
 
@@ -321,9 +303,9 @@ Shortlist for the next iteration:
   - `Regenerating_With_Feedback` takes the rejected draft + user feedback,
     produces a rewrite, pauses for review. Accept / Reject → back to
     Drafting; Regenerate → self-loop for another rewrite.
+
 - Four nodes total: `Validating_Payload`, `Building_Marketing_Brief`,
   `Drafting_And_Reviewing_Posts`, `Regenerating_With_Feedback`.
-
 
 ## Stage 19 — Draft caching to survive interrupt replay
 
@@ -332,7 +314,7 @@ resume, it doesn't continue them from where they paused**.
 
 - When `interrupt()` resolves via `Command(resume=...)`, LangGraph re-runs
   the whole node from the top. It caches each `interrupt()` call's resume
-  value by *position in the node* — so on replay, the N-th `interrupt()`
+  value by _position in the node_ — so on replay, the N-th `interrupt()`
   returns the stored answer instantly.
 - Critically, LangGraph **does not** cache arbitrary function calls. LLM
   invocations re-run on every replay.
@@ -345,7 +327,6 @@ resume, it doesn't continue them from where they paused**.
     corruption.
 - Fix: use the state dict as a cache and split each produce/review cycle
   into **two node invocations**, separated by a checkpoint:
-
   1. **Invocation A (produce)** — if `state["cacheDraft"]` is None, call
      the LLM, validate the output, return `{"cacheDraft": draft, ...}`.
      No `interrupt()` on this invocation.
@@ -360,7 +341,6 @@ resume, it doesn't continue them from where they paused**.
   and the draft the user approved is exactly the draft that gets appended.
 - Same pattern copied to `Regenerating_With_Feedback` so regeneration also
   runs the LLM exactly once per draft, regardless of replays.
-
 
 ## Stage 20 — State-driven iteration with `currentLoopStartNumber`
 
@@ -390,7 +370,6 @@ resume, it doesn't continue them from where they paused**.
   - Correct: increment only on Accept / Reject / Regenerate (the decisions
     that end a slot's cycle).
 
-
 ## Stage 21 — Retry counters and failure-flag state hygiene
 
 - If the LLM returns empty / invalid content, the node writes
@@ -416,7 +395,6 @@ resume, it doesn't continue them from where they paused**.
   `"failedToBuildPostatGenerationNumber": 0` into state. Same for the regen
   flags. The router's fail branch is now only live while a real failure
   exists.
-
 
 ## Stage 22 — Router design and conditional-edge gotchas
 
@@ -455,7 +433,6 @@ Regen-side mirror:
 3. Otherwise → same node (self-loop for chained regen, or waiting for
    review)
 
-
 ## Stage 23 — Graph visualisation helper
 
 - Added `tests/graphGenerating.py` to dump the compiled graph as both a
@@ -471,7 +448,6 @@ Regen-side mirror:
 - Avoided installing Graphviz system-wide (the `pygraphviz` build pulls in
   C headers); LangGraph's Mermaid renderer covers the same ground with
   zero native deps.
-
 
 ## Stage 24 — Consolidating retries on LangGraph's `RetryPolicy`
 
@@ -506,7 +482,7 @@ Refactor that followed:
 - **Nodes now raise `FailedToBuildPosts`** on invalid LLM output instead
   of returning a failure flag. Both `generatingMarketingPosts` and
   `regeneratePost` mirror each other here.
-- **`except FailedToBuildPosts: raise`** added *above* the generic
+- **`except FailedToBuildPosts: raise`** added _above_ the generic
   `except Exception` block so retries don't double-wrap into
   `FailedToBuildPosts("Failed to build posts: Failed to build posts: ...")`.
   Same `GraphInterrupt` passthrough lesson from Stage 13, different
@@ -516,7 +492,7 @@ Refactor that followed:
   `AgentState` entirely. Router lost its fail branch and went back to a
   clean three-case decision.
 - `retry_on=[FailedToBuildPosts]` (list of exception classes) — important
-  that this is the *class* that exhausted attempts raise to the caller,
+  that this is the _class_ that exhausted attempts raise to the caller,
   not a catch-all; anything else (e.g. a true `psycopg` error during
   checkpoint write) must not be silently retried.
 
@@ -524,17 +500,16 @@ Gotchas I hit during the swap:
 
 - **`retry_delay=1`** isn't a valid `RetryPolicy` kwarg.
   `TypeError: RetryPolicy.__new__() got an unexpected keyword argument
-  'retry_delay'`. Use `initial_interval` and/or `backoff_factor`.
+'retry_delay'`. Use `initial_interval` and/or `backoff_factor`.
 - **Manual `node_attempt` guard cancels `RetryPolicy`.** Tried an early
   `if runtime.execution_info.node_attempt > 1: raise FailedToBuildPosts`
-  thinking it would work *with* the retry policy. What it actually did
+  thinking it would work _with_ the retry policy. What it actually did
   was shortcut the second attempt — so `max_attempts=3` behaved like
   `max_attempts=1`. Either own the retry count yourself (no
   `RetryPolicy`), or let `RetryPolicy` own it (no manual guard). Not
   both.
 - **`runtime.execution_info`** is a property, not a method. Earlier code
   had `runtime.get_execution_info()` which doesn't exist.
-
 
 ## Stage 25 — Testing under `pytest`
 
@@ -585,7 +560,6 @@ typing `pytest tests/test_agentGraph.py # just the flow tests` at the
 prompt and interprets the trailing `#` as a literal path. Either drop
 the inline comment or `setopt interactive_comments` in `~/.zshrc`.
 
-
 ## Stage 26 — PostgreSQL checkpointer via Neon
 
 `InMemorySaver` was fine for local dev but obviously can't survive a
@@ -604,7 +578,7 @@ documentation makes them easy to make:
 
 1. **`PostgresStore` ≠ checkpointer.** First attempt was
    `checkpointer = PostgresStore(URI)`. `PostgresStore` is LangGraph's
-   long-term *memory store* (for persistent key-value memory across
+   long-term _memory store_ (for persistent key-value memory across
    threads), not a `BaseCheckpointSaver`. Wrong class, also not
    imported — `NameError` at module load.
 2. **`PostgresSaver(URI)` — wrong constructor.** `PostgresSaver.__init__`
@@ -616,9 +590,9 @@ documentation makes them easy to make:
    `checkpointer.setup()` on it raises `AttributeError`.
 4. **`with … as checkpointer:` at module scope.** Correct shape, but
    the connection closes the instant the `with` block exits — which
-   means any `graph.invoke(...)` *after* the block dies with
+   means any `graph.invoke(...)` _after_ the block dies with
    `InterfaceError: the connection is closed`. Fine for a one-shot
-   script if *all* usage lives inside the block; wrong for a long-lived
+   script if _all_ usage lives inside the block; wrong for a long-lived
    FastAPI process.
 5. **`from_conn_string(URI, serde=serde)`** doesn't accept a `serde`
    kwarg — `from_conn_string` always constructs the saver as
@@ -659,7 +633,6 @@ Also kept `setup()` as an idempotent no-op on subsequent runs — it
 creates `checkpoints`, `checkpoint_writes`, `checkpoint_blobs` on first
 invocation and does nothing thereafter.
 
-
 ## Stage 27 — Thread inspection utility
 
 Added `tests/inspectThread.py`: given a `thread_id` from Neon, prints
@@ -685,7 +658,6 @@ uv run python tests/inspectThread.py <thread_id>
 Useful when the graph runs in a server and I need to inspect what a
 given run produced without a UI. Also doubles as a debugging tool
 during the serializer-allowlist work in Stage 28.
-
 
 ## Stage 28 — Checkpoint serializer allowlist
 
@@ -732,7 +704,6 @@ won't forward a `serde` kwarg (Stage 26 bullet 5), so Option B
 requires the manual `psycopg.Connection.connect(...)` pattern to get
 `serde=` into the `PostgresSaver` constructor.
 
-
 ## Stage 29 — Service layer + client simulator
 
 With the checkpointer working, the next layer up was the thing an HTTP
@@ -767,7 +738,7 @@ HTTP wiring lives in `app/api/version1/runAgent.py`:
 
 - `POST /runAgent` → `service.startRun(payload)`.
 - `POST /runAgent/{thread_id}/decide` → `service.resumeRun(thread_id,
-  decision)`.
+decision)`.
 
 `thread_id` lives in the path of the resume endpoint, not in a cookie
 or header — a run is idempotent on its `thread_id` and the URL should
@@ -787,7 +758,6 @@ appropriate `AgentPostGenerationInterrupt`, calls `resumeRun`, loops
 until `state == "completed"`. Useful as both a demo and a smoke test
 against live Gemini + live Neon. `--auto-accept` mode lets it run
 unattended for end-to-end regression checks.
-
 
 ## Stage 30 — Prompt ↔ schema mismatch caught by the simulator
 
@@ -825,8 +795,8 @@ was shrunk.
 Fixes, in order of impact:
 
 1. **Descriptions on the schema fields** — `Field(..., description=
-   "The full post as one string, with real newlines between
-   paragraphs...")` on `content`, same for `publishDate`.
+"The full post as one string, with real newlines between
+paragraphs...")` on `content`, same for `publishDate`.
    `with_structured_output` passes these to the model. When the prompt
    contradicts the schema, the descriptions are what the model falls
    back to.
@@ -859,7 +829,6 @@ useful retry path.
 Also a meta-lesson: unit tests with mocked LLMs would not catch this.
 `simulateRun.py` against real Gemini is a necessary complement.
 
-
 ## Stage 31 — Streaming node updates to the client
 
 `AgentServices.startRun` / `resumeRun` used to be plain functions that
@@ -884,10 +853,10 @@ Gotchas specific to "return a value from a generator":
 - **`return <value>` inside a generator is legal** in Python 3, but the
   value isn't delivered through iteration — only through
   `StopIteration.value`. Callers that just did `for event in stream:
-  ...` silently dropped the final view.
+...` silently dropped the final view.
 - **`simulateRun.py` had to be rewritten** around a `consumeRun` helper
   that does `while True: next(stream)` in a `try` / `except
-  StopIteration as stop: finalPayload = stop.value` loop. It prints
+StopIteration as stop: finalPayload = stop.value` loop. It prints
   node events as they arrive and parses `stop.value` at the end.
 - **`stream_mode="updates"` + `version="v2"` shape**: each chunk is
   `{"type": "updates", "data": {node_name: partial_state}}`. The
@@ -895,10 +864,9 @@ Gotchas specific to "return a value from a generator":
   the node name; partial state leaks internal keys to the client, so
   it's intentionally dropped before `json.dumps`.
 - **Single client-view helper**: `_buildClientView(graph, threadId,
-  config)` stays unchanged from Stage 29. `startRun` and `resumeRun`
+config)` stays unchanged from Stage 29. `startRun` and `resumeRun`
   both `return` its result at the end — the frontend gets the same
   shape regardless of which endpoint emitted it.
-
 
 ## Stage 32 — Prompt cleanup after the schema fix
 
@@ -934,7 +902,6 @@ Lesson already on the list ("prompt ↔ schema must agree"), corollary:
 prompts that grew during exploration are liabilities once the schema
 stabilises. Cut anything the schema no longer asks for.
 
-
 ## Stage 33 — Marketing brief persistence on S3
 
 Up through Stage 10 the marketing brief was being written to local
@@ -947,11 +914,11 @@ New pieces:
 
 - **`app/repository/s3connection.py`** — a thin `S3Connection` wrapper
   around `boto3.client("s3", ...)` with `put_object(body, bucketName,
-  key)` and `get_file(bucketName, key)` helpers. Construction reads
+key)` and `get_file(bucketName, key)` helpers. Construction reads
   `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`,
   `AWS_BUCKET_NAME` from `Config`. An `if __name__ == "__main__"`
   block round-trips a small object so `uv run python -m
-  app.repository.s3connection` doubles as a credentials smoke test.
+app.repository.s3connection` doubles as a credentials smoke test.
 - **`configurations/config.py`** picked up the four AWS fields.
   `.env` gets the same four keys; `.env.example` stays gitignored but
   allow-listed.
@@ -991,7 +958,6 @@ Not yet done (intentional, next stage):
   cold-started replica) regenerate posts without re-running the
   brief node.
 
-
 ## Stage 34 — `commands.py` runbook and `__init__.py` slim-down
 
 Two small chores that had been piling up:
@@ -1000,11 +966,11 @@ Two small chores that had been piling up:
   runnable entrypoint in the project: `main.py` (FastAPI via
   `uv run fastapi dev main.py` or `uvicorn main:app --reload`),
   `app/repository/s3connection.py` (as `python -m
-  app.repository.s3connection`), every script under `tests/` (both
+app.repository.s3connection`), every script under `tests/` (both
   `python -m` and `python <path>` forms, since the test scripts
   prepend `Backend/` to `sys.path` themselves), and the pytest /
   uv housekeeping commands. Also explicitly lists which files are
-  *not* runnable directly (pure library modules under `services/`,
+  _not_ runnable directly (pure library modules under `services/`,
   `api/`, `models/`, `prompts/`, `errorsHandler/`,
   `configurations/`) so future-me doesn't go looking for a
   `__main__` that never existed. Running `uv run python commands.py`
@@ -1023,51 +989,58 @@ Two small chores that had been piling up:
   `app.errorsHandler.errors` explicitly. Less magic, one source of
   truth, no `__all__` to keep in sync.
 
-
 ## Stage 35 — Dependency modules and breaking the import cycle
 
 The stack hit a **circular import** once `app.services.agentGraph`
-imported `get_postgres_repository` (or equivalent) from a module that
-also imported `AgentServices`, while `AgentServices` imports
-`workflow` from `agentGraph`. Python then failed with *partially
-initialized module* errors at startup.
+imported a repository helper from a module that also imported
+`AgentServices`, while `AgentServices` imports `workflow` from
+`agentGraph`. Python then failed with _partially initialized module_
+errors at startup.
 
-**Fix — separate concerns and keep graph imports acyclic:**
+**Fix — separate concerns and keep graph imports acyclic** (this pattern
+stays; the _implementation_ evolved in Stages 36–37 to async).
 
-- **`app/api/depends/repositoryDepends.py`** — two `@lru_cache(maxsize=1)`
-  factories, each returning a `PostgreSQLRepository`:
-  - `get_postgres_repository_checkpointer()` — its `ConnectionPool`
-    backs `PostgresSaver` for LangGraph checkpoints (wired in
-    `AgentServices.__init__` via `PostgresSaver(self.conn, serde=SERDE)`
-    and `repository.setup(self.checkpointer)`).
-  - `get_postgres_repository_posts()` — used only from
-    `saveDataToDatabase` in `agentGraph.py` for
-    `saveFinalPostDataExecuteMany` into the `posts` table.
+**`app/api/depends/repositoryDepends.py` (current shape):**
 
-  This module imports **only** `PostgreSQLRepository` from
-  `app.repository.postgreSQL` — no `AgentServices`, no `agentGraph` —
-  so it is safe for `agentGraph` to import from it.
+- Two **async** singleton factories (`global` + lazy init, **not** `lru_cache`
+  — that does not play cleanly with `async def` factories in older usage):
+  - `get_postgres_repository_checkpointer()` → `await PostgreSQLRepository.create()`
+  - `get_postgres_repository_posts()` → `await PostgreSQLRepository.create()`, same for posts writes.
+- Each factory returns a `PostgreSQLRepository` whose `conn` is an
+  **`psycopg_pool.AsyncConnectionPool`** (opened in `create()`; prefer
+  explicit `await pool.open()` to avoid deprecation warnings depending on
+  `psycopg_pool` version).
+- The **checkpointer** repo is used from **`AgentServices.create()`** to
+  construct **`AsyncPostgresSaver` from `langgraph.checkpoint.postgres.aio`**
+  and `await repo.setup(instance.checkpointer)` (async setup).
+- The **posts** repo is used from **`saveDataToDatabase`** in
+  `agentGraph.py` via `await get_postgres_repository_posts()` and
+  `saveFinalPostDataExecuteMany` (async).
 
-- **`app/api/depends/servicesDepends.py`** — `get_agent_services()`
-  returns a cached `AgentServices()` (no repository argument; the
-  service pulls the checkpointer repo internally). FastAPI routes import
-  this, not `AgentServices` directly.
+This module imports **only** `PostgreSQLRepository` from
+`app/repository/postgreSQL.py` — no `AgentServices`, no `agentGraph`.
 
-**Trade-off:** two cached factories means **two** `PostgreSQLRepository`
-instances and thus **two** connection pools to the same Neon URI
-unless later collapsed to a single shared `get_postgres_repository()`.
-That was accepted for clarity between checkpoint I/O and app-table
-inserts; it is **not** required for import hygiene — a single pool would
-also work if all code paths shared one `repository.conn`.
+**`app/api/depends/servicesDepends.py` (current shape):**
 
-**API wiring (superseded in part by Stage 37):** the public entry is
-`POST /api/v1/startAgent` (and `POST /api/v1/resumeAgent` for
-`Command(resume=...)`). The route is an **async generator** that
-`yield`s from `startRun` / `resumeRun`; see Stage 31 for the NDJSON
-line contract and Stage 37 for `EventSourceResponse` + `aget_state`.
+- **`async def get_agent_services() -> AgentServices`** with
+  `global _agent_services` and **`_agent_services = await AgentServices.create()`**
+  on first use — one fully wired service (async graph, `AsyncPostgresSaver`) per
+  process. FastAPI routes `Depends(get_agent_services)`; do **not** build
+  `AgentServices()` at module level in routers.
 
+**Trade-off:** two separate `PostgreSQLRepository` singletons (two async
+pools) to the same Neon URI — acceptable for isolating checkpointer
+traffic vs app `posts` inserts; can be merged later to one pool if desired.
+
+**API wiring (see Stages 31 + 37):** `POST /api/v1/startAgent` and
+`POST /api/v1/resumeAgent` with `response_class=EventSourceResponse`,
+`async for` / `yield` from `startRun` / `resumeRun` (NDJSON lines from
+`APIResponse`); **`startAgent`** maps `AppError` to `HTTPException` in a
+`try/except` around the loop; **`resumeAgent`** only yields (runtime errors
+surface as stream failures unless you add the same try/except).
 
 ## Stage 36 — Async graph hardening, LangGraph reducers, and Python 3.11
+
 ### (session log: stuck points and how we fixed them)
 
 This stage captures a consolidation pass on the moving parts that were
@@ -1169,7 +1142,7 @@ coupling to `interrupt()`**.
   `interrupt()` explodes.
 - **Fix:** set **`requires-python = ">=3.11"`** in `pyproject.toml` and
   recreate the **`.venv`** on 3.11 or 3.12. This is a **hard
-  requirement** for *async* nodes + `interrupt`, not a nice-to-have.
+  requirement** for _async_ nodes + `interrupt`, not a nice-to-have.
 
 **Other production-style errors seen in the same timeline (not all code bugs)**
 
@@ -1181,7 +1154,7 @@ coupling to `interrupt()`**.
   dead connection. Mitigate with pool options (keepalive, shorter idle,
   or retry on that error) — an ops/DB concern as much as app code.
 - **`RuntimeError: Caught handled exception, but response already
-  started`:** the NDJSON stream had already started when an exception
+started`:** the NDJSON stream had already started when an exception
   fired inside the generator; the framework cannot swap in a JSON error
   body. Fix the underlying exception (API key, DB, or interrupt
   context above).
@@ -1191,9 +1164,8 @@ coupling to `interrupt()`**.
 `app/services/AgentServices.py` (astream, checkpointer),
 `app/repository/postgreSQL.py` (async pool + Async saver type hints),
 `app/api/depends/*.py` (singletons, async repos),
-`app/api/version1/startAgent.py` & `resumeAgent.py` (async routes,
-streaming-only responses), `pyproject.toml` (Python 3.11+).
-
+`app/api/version1/startAgent.py` & `resumeAgent.py` (async generator routes;
+`EventSourceResponse` in Stage 37), `pyproject.toml` (Python 3.11+).
 
 ## Stage 37 — `EventSourceResponse`, native `async for` at the route, and `aget_state`
 
@@ -1207,7 +1179,7 @@ propagation (`RuntimeError: response already started`).
 
 - **`POST /api/v1/startAgent`** and **`POST /api/v1/resumeAgent`** are
   **async generator routes**: `async for chunk in
-  agentServices.startRun(...): yield chunk` (and the same for
+agentServices.startRun(...): yield chunk` (and the same for
   `resumeRun`). The router declares
   `response_class=EventSourceResponse` (from `fastapi.sse`) so the
   framework treats the body as a **Server-Sent Events**-style stream
@@ -1224,16 +1196,26 @@ propagation (`RuntimeError: response already started`).
   **async-compiled** LangGraph + **`AsyncPostgresSaver`** and avoids
   blocking the event loop on state reads at the end of a run.
 
-**Footgun to avoid:** a module-level `agent_services = AgentServices()`
-in `startAgent.py` (empty graph before `create()`) is **not** the
-instance `Depends(get_agent_services)` injects — remove or use only the
-dependency-injected service for any real work.
+**Cleanup:** the router should **not** keep a module-level
+`agent_services = AgentServices()` (that constructs an unconfigured
+`AgentServices` with `graph is None`). Only the **`Depends(get_agent_services)`**
+instance from `create()` is valid for runs.
 
 **Dependency injection:** `get_agent_services` remains
 `async` with `global _agent_services` and
 `await AgentServices.create()` so a single fully wired
 `AsyncPostgresSaver` + compiled graph is shared across requests.
 
+**Files to keep in sync (sanity check after refactors):**
+
+| Area                                    | File(s)                                                      |
+| --------------------------------------- | ------------------------------------------------------------ |
+| Graph + `interrupt` / reducers          | `app/services/agentGraph.py`                                 |
+| `astream`, `aget_state`, serde          | `app/services/AgentServices.py`                              |
+| Async pool + `AsyncPostgresSaver` setup | `app/repository/postgreSQL.py`                               |
+| Singleton repos / service               | `app/api/depends/repositoryDepends.py`, `servicesDepends.py` |
+| HTTP stream                             | `app/api/version1/startAgent.py`, `resumeAgent.py`           |
+| Python version                          | `pyproject.toml` (`requires-python >= 3.11`)                 |
 
 ## What the system does end-to-end today
 
@@ -1262,9 +1244,9 @@ dependency-injected service for any real work.
      `cacheDraft`, return. Router loops back for the review step.
    - **Review step** (cache hit): `interrupt(...)` pauses with
      `{postContent, publishDate, actions: [Accept, Reject, Regenerate]}`.
-7. Client resumes (e.g. from `tests/simulateRun.py` or a future
-   `/runAgent/.../decide` route) via
-   `Command(resume=AgentPostGenerationInterrupt(...))`:
+7. Client resumes via `POST /api/v1/resumeAgent` (body includes `threadId`
+   and the interrupt decision) or from scripts; the service passes
+   `Command(resume=AgentPostGenerationInterrupt(...))` into the graph:
    - **Accept** — append `AgentPost`, clear `cacheDraft`, increment
      `currentLoopStartNumber`, reset failure flags. Router loops back if
      more posts are needed; otherwise routes to `Saving_Data_To_Database`
@@ -1282,23 +1264,23 @@ dependency-injected service for any real work.
    rewrite.
 9. Consecutive LLM failures on produce-steps raise `FailedToBuildPosts`;
    LangGraph's `RetryPolicy(max_attempts=3, backoff_factor=3,
-   retry_on=[FailedToBuildPosts])` retries the node. If all three
+retry_on=[FailedToBuildPosts])` retries the node. If all three
    attempts exhaust, the exception bubbles up to the caller rather than
    silently landing an empty slot.
 10. Every checkpoint is persisted to **Neon Postgres** via
-    `PostgresSaver` (pooled through the checkpointer-side repository from
-    Stage 35), so a run paused at `interrupt(...)` survives a
-    process restart and can be resumed hours later using the same
+    **`AsyncPostgresSaver`** (see Stage 36–37) on an async pool from the
+    checkpointer-side repository, so a run paused at `interrupt(...)` survives
+    a process restart and can be resumed later using the same
     `thread_id`.
 11. **Saving_Data_To_Database** — final node: `writeSummaryToS3` for
-    notes, then `get_postgres_repository_posts()`.
+    notes, then `await get_postgres_repository_posts()` (async factory) and
     `saveFinalPostDataExecuteMany(...)` into the `posts` table
     (Neon, same URI, separate connection pool from the checkpointer
     in the current two-factory design).
 12. The service layer surfaces accepted posts as JSON (see
-    `_buildClientView`); the HTTP stream ends with the completed client
-    view when the graph reaches `END`.
-
+    `await _buildClientView` using **`aget_state`**); the HTTP stream ends
+    with the completed client view when the graph reaches `END` or pauses
+    for review.
 
 ## Lessons worth keeping
 
@@ -1392,16 +1374,16 @@ dependency-injected service for any real work.
   runs and exit cleanly on the first `interrupt(...)`.
 - **One client-view shape for start and resume.** The frontend should
   not need to know whether this is the first call or the fifth.
-  `{state, draft, posts}` derived from `graph.get_state(config)` is
-  the same whether the thread just paused for the first time or
-  resumed from `Command(resume=...)`. Build it in one helper
-  (`_buildClientView`) and call it from both service methods.
+  `{state, draft, posts}` derived from **`await graph.aget_state(config)`**
+  (async graph) is the same whether the thread just paused for the first
+  time or resumed from `Command(resume=...)`. Build it in one helper
+  (`_buildClientView`) and call it from both `startRun` and `resumeRun`.
 - **Generators that `return` hide their final value.** A service
-  method that streams node events *and* produces a terminal view has
+  method that streams node events _and_ produces a terminal view has
   to be consumed with a `try: next(...) / except StopIteration as
-  stop: stop.value` pattern, not a plain `for` loop. If you're
+stop: stop.value` pattern, not a plain `for` loop. If you're
   plugging the generator into `StreamingResponse`, split the two
-  responsibilities (stream *or* return-the-view), or document the
+  responsibilities (stream _or_ return-the-view), or document the
   `StopIteration.value` contract loudly — otherwise callers silently
   drop the final state.
 - **Persist artefacts off the local filesystem.** Brief-to-disk was

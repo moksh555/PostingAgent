@@ -7,7 +7,6 @@ from app.api.depends.servicesDepends import get_agent_services
 from app.errorsHandler.errors import AppError
 
 router = APIRouter()
-agent_services = AgentServices()
 
 
 @router.post(
