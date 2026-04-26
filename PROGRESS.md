@@ -9,7 +9,10 @@ and any errors that shaped the design.
 
 - Chose **`uv`** as the package manager + runner. Faster than `pip`, gives a
   reproducible `uv.lock`, and lets me run modules with `uv run python -m ...`.
-- Python **3.10** pinned via `.python-version`.
+- **Python 3.11+** is required for the current async LangGraph + `interrupt()`
+  stack (`requires-python` in `pyproject.toml`); a `.python-version` file may
+  still pin a concrete minor (3.12, etc.) for local `uv` / pyenv. Earlier notes
+  in this file mentioned 3.10; Stage 36 documents the upgrade motivation.
 - Project layout:
 
   ```
@@ -1063,6 +1066,131 @@ client receives streamed node-update JSON lines plus the final client
 view via the generator contract described in Stage 31.
 
 
+## Stage 36 — Async graph hardening, LangGraph reducers, and Python 3.11
+### (session log: stuck points and how we fixed them)
+
+This stage captures a consolidation pass on the moving parts that were
+easy to get wrong: **typed state reducers**, **async vs sync LangGraph**,
+**Postgres checkpointers**, **FastAPI streaming**, and **Python version
+coupling to `interrupt()`**.
+
+**Where I was stuck — `"add" is not defined` on `AgentState`**
+
+- LangGraph’s list merge pattern is `posts: Annotated[list[AgentPost], add]`.
+- **`add` must be imported:** `from operator import add` (it is
+  `operator.add`, i.e. list concatenation for partial updates). Without
+  the import, the type checker and runtime both complain.
+
+**Where I was stuck — posts duplicated or state looked wrong with `add`**
+
+- With the **`add` reducer**, each node update is **concatenated** to the
+  existing list: `old_posts + update["posts"]`.
+- Returning the **entire** current list from a node (e.g. `{"posts": postList}` when only staging a draft) **doubles** the list.
+- **Fix:** return **only new items** as a one-element list, e.g.
+  `{"posts": [acceptedPost]}` on Accept; for “draft ready, no new accepted
+  post” returns, **omit** `posts` (or in edge cases use `[]` as a no-op
+  append). Regenerate Accept path was aligned to the same delta pattern.
+
+**Where I was stuck — HTTP 200 but empty / broken stream from `/startAgent`**
+
+- A stray **`yield` inside `except` blocks** in a route function makes
+  Python treat **the whole handler as a generator**. The success path
+  `return StreamingResponse(...)` is then returned via
+  `StopIteration(StreamingResponse)`, which Starlette does not treat
+  like a normal return — the client can see 200 with a broken body.
+- **`response_model=AgentRunResponseCompleted` on a streaming NDJSON
+  endpoint** fights the real response shape (stream of
+  `APIResponse`-shaped lines, not a single Pydantic body).
+- **Fix:** `async def run_agent` / `resume_agent` with **only** `return
+  StreamingResponse(...)`, no `yield` in the route; **drop
+  `response_model`** on those routes or document the stream in OpenAPI
+  by hand. **CORS:** if a browser UI calls the API from another
+  origin, add `CORSMiddleware` and **import** it from
+  `fastapi.middleware.cors` (a `NameError` is easy to introduce when
+  pasting middleware without the import).
+
+**Where I was stuck — async repository / service construction**
+
+- **`async def __init__` is not valid in Python** — the constructor
+  is never `await`ed, so the coroutine is discarded.
+- **`await` on `ConnectionPool` / `PostgreSQLRepository()`** when those
+  are not awaitable is a `TypeError`.
+- **`get_agent_services` singleton** — assigning
+  `_agent_services = await AgentServices.create()` without
+  `global _agent_services` only sets a **local** variable, so the
+  cache never works.
+- **Evolving design:** an **`AgentServices.create()`** `classmethod`
+  (async) wires `AsyncPostgresSaver`, `await repo.setup(checkpointer)`,
+  and `workflow.compile(checkpointer=...)`; **`get_agent_services`**
+  uses `global` + that factory. The forward reference
+  `-> "AgentServices"` on `create` avoids `NameError` during class
+  body execution (class name not defined yet in annotations).
+
+**Where I was stuck — `AsyncPostgresSaver` import error**
+
+- `from langgraph.checkpoint.postgres import AsyncPostgresSaver` **fails** — the
+  sync `__init__.py` re-exports `PostgresSaver` but **not** the async saver.
+- **Fix:** `from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver`.
+  Use an **`AsyncConnectionPool`** (and `await pool.open()` where
+  `psycopg_pool` deprecates auto-open in the constructor) with the
+  async checkpointer. Keep sync vs async pools consistent across graph
+  compile and node I/O.
+
+**Where I was stuck — async graph `stream` vs `astream`, `invoke` vs `ainvoke`**
+
+- **`self.graph.stream`** with **async** graph nodes is the wrong
+  entrypoint; use **`async for` over `self.graph.astream`** in
+  `startRun` / `resumeRun`.
+- Inside async nodes, **`chain.ainvoke(...)`** and **`LLM.ainvoke(...)`**
+  return coroutines — they must be **`await`ed** or the rest of the code
+  operates on a coroutine object, not the structured output.
+
+**Where I was stuck — `get_postgres_repository_posts()` in an async node**
+
+- The factory is **async**; calling it without **`await`** passes a
+  coroutine into the DB layer. In **`saveDataToDatabase`**, use
+  `repo = await get_postgres_repository_posts()`.
+- On success, the node should **`return {}`** so LangGraph gets an
+  explicit empty partial update; re-raise **`FailedToWriteSummaryToS3`**
+  without wrapping in a broad `Exception` handler.
+
+**Where I was stuck — `RuntimeError: Called get_config outside of a runnable context` on `interrupt()`**
+
+- `interrupt()` calls **`get_config()`**, which uses LangChain’s
+  **`contextvars`**-based runnable config. For **async** node functions,
+  LangGraph only installs that context when
+  **`ASYNCIO_ACCEPTS_CONTEXT`** is true — i.e. **Python 3.11+** (it uses
+  `asyncio.create_task(..., context=...)` to propagate the config). On
+  **Python 3.10**, async nodes can run without the config, so the first
+  `interrupt()` explodes.
+- **Fix:** set **`requires-python = ">=3.11"`** in `pyproject.toml` and
+  recreate the **`.venv`** on 3.11 or 3.12. This is a **hard
+  requirement** for *async* nodes + `interrupt`, not a nice-to-have.
+
+**Other production-style errors seen in the same timeline (not all code bugs)**
+
+- **Gemini `400 API_KEY_INVALID`:** `GEMINI_API_KEY` in
+  `configurations/.env` is missing, wrong, or not the Generative
+  Language API key the SDK expects. Fix the env, restart the server.
+- **`psycopg.OperationalError: SSL connection has been closed`:** the
+  server or Neon closed an idle connection; the pool can hand out a
+  dead connection. Mitigate with pool options (keepalive, shorter idle,
+  or retry on that error) — an ops/DB concern as much as app code.
+- **`RuntimeError: Caught handled exception, but response already
+  started`:** the NDJSON stream had already started when an exception
+  fired inside the generator; the framework cannot swap in a JSON error
+  body. Fix the underlying exception (API key, DB, or interrupt
+  context above).
+
+**Files touched in this pass (indicative):** `app/services/agentGraph.py`
+(reducer, awaits, return shapes, S3/DB node),
+`app/services/AgentServices.py` (astream, checkpointer),
+`app/repository/postgreSQL.py` (async pool + Async saver type hints),
+`app/api/depends/*.py` (singletons, async repos),
+`app/api/version1/startAgent.py` & `resumeAgent.py` (async routes,
+streaming-only responses), `pyproject.toml` (Python 3.11+).
+
+
 ## What the system does end-to-end today
 
 1. Client `POST /api/v1/runAgent` with `{userId, url, numberOfPosts, startDate}`.
@@ -1246,3 +1374,15 @@ view via the generator contract described in Stage 31.
   from the submodule directly anyway, delete the re-exports and keep
   `__init__.py` empty (or minimal). One source of truth beats a
   second one that silently falls out of sync.
+- **`Annotated[..., operator.add]` needs `from operator import add`.** For
+  list appends in state, return **deltas** (`[one_new_item]`) or omit the
+  key; never return the full list unless you switch to a replace strategy.
+- **FastAPI: `yield` in a route makes it a generator route — do not mix
+  with `return StreamingResponse` on the happy path.**
+- **`AsyncPostgresSaver` lives in `langgraph.checkpoint.postgres.aio`, not
+  the sync postgres package root.**
+- **Async LangGraph + `interrupt()` on Python 3.10 is not supported the way
+  you expect; use Python 3.11+** so `get_config()` works inside async
+  nodes (LangGraph’s own `ASYNCIO_ACCEPTS_CONTEXT` gate).
+- **Singleton module globals assigned inside functions need `global x`
+  in Python,** or the name shadows and the cache never updates.
