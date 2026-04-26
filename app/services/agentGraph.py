@@ -2,7 +2,6 @@ import json
 from datetime import datetime
 from operator import add
 from typing_extensions import TypedDict, Annotated  # type: ignore
-from pathlib import Path
 from langchain_core.prompts import ChatPromptTemplate  # type: ignore
 from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
 from langgraph.runtime import Runtime  # type: ignore
@@ -10,7 +9,7 @@ from langgraph.errors import GraphInterrupt  # type: ignore
 from langgraph.graph import StateGraph, START, END  # type: ignore
 from langgraph.types import interrupt, RetryPolicy  # type: ignore
 from configurations.config import config
-
+from app.api.depends.repositoryDepends import get_s3_connection
 from app.errorsHandler.errors import (
     NoPayloadError,
     NoURLError,
@@ -64,16 +63,13 @@ class AgentState(TypedDict):
     # TODO: # this is somehting I am planning to add later on as a feature, this will add more context for the user to generate next posts
     # reasonForDelteion: list[str]
 
-async def writeSummaryToS3(notes: AgentSummary, userId: str) -> Path:
-    s3 = S3Connection()
+async def writeSummaryToS3(notes: AgentSummary, userId: str) -> str:
     try:
-        result = await s3.put_object(
+        await get_s3_connection().put_object(
             body=notes.marketingBrief,
             bucketName=config.AWS_BUCKET_NAME,
             key=f"UserNotes/{userId}/{notes.fileName}",
         )
-        if result is None:
-            raise FailedToWriteSummaryToS3("Failed to write summary to S3")
         return f"https://{config.AWS_BUCKET_NAME}.s3.{config.AWS_DEFAULT_REGION}.amazonaws.com/UserNotes/{userId}/{notes.fileName}"
     except FailedToWriteSummaryToS3:
         raise
@@ -94,6 +90,10 @@ async def receiverNode(state: AgentState):
     elif payload.startDate is None:
         raise NoStartDateError("No start date found during Agentic RAG Flow")
     return {}
+
+
+async def lookingForKnowledgefromPrviousNotes(state: AgentState):
+    pass
 
 
 async def buildingMarketingBrief(state: AgentState):

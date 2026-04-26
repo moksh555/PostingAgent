@@ -82,7 +82,7 @@ class AgentServices:
         except AppError:
             raise
         except Exception as e:
-            raise FailedToStartAgent(str(e)) from e
+            raise FailedToStartAgent(str(e))
 
     async def resumeRun(
         self,
