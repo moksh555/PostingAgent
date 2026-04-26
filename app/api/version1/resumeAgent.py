@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException, status, Depends # type: ignore
 from app.models.AgentModels import (
-    AgentRunResponseCompleted,
     AgentResumeRunRequest,
     )
+from fastapi.sse import EventSourceResponse # type: ignore
 from app.services.AgentServices import AgentServices
 from app.api.depends.servicesDepends import get_agent_services
 from fastapi.responses import StreamingResponse # type: ignore
@@ -11,7 +11,7 @@ router = APIRouter()
 
 @router.post(
     "/resumeAgent", 
-    response_model=AgentRunResponseCompleted, 
+    response_class=EventSourceResponse, 
     status_code=status.HTTP_200_OK
     )
 async def resume_agent(
@@ -27,9 +27,7 @@ async def resume_agent(
         Streamed NDJSON (APIResponse); final `state=result` body matches AgentRunResponseCompleted when the run finishes or pauses.
     """
 
-    return StreamingResponse(
-        agentServices.resumeRun(
-            payload=payload,
-        ),
-        media_type="application/x-ndjson",
-    )
+    async for chunk in agentServices.resumeRun(
+        payload=payload
+        ):
+        yield chunk

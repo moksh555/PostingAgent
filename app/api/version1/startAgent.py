@@ -1,9 +1,8 @@
 
 from fastapi import APIRouter, status, Depends, HTTPException  # type: ignore
-
-from app.models.AgentModels import AgentRunRequest, AgentRunResponseCompleted
+from app.models.AgentModels import AgentRunRequest
 from app.services.AgentServices import AgentServices
-from fastapi.responses import StreamingResponse  # type: ignore
+from fastapi.sse import EventSourceResponse # type: ignore
 from app.api.depends.servicesDepends import get_agent_services
 from app.errorsHandler.errors import AppError
 
@@ -13,7 +12,7 @@ agent_services = AgentServices()
 
 @router.post(
     "/startAgent",
-    response_model=AgentRunResponseCompleted,
+    response_class=EventSourceResponse,
     status_code=status.HTTP_200_OK,
 )
 async def run_agent(
@@ -28,12 +27,10 @@ async def run_agent(
         Streamed NDJSON (APIResponse); final `state=result` body matches AgentRunResponseCompleted when the run finishes or pauses.
     """
     try:
-        return StreamingResponse(
-            agentServices.startRun(
-                payload=payload,
-            ),
-            media_type="application/x-ndjson",
-        )
+        async for chunk in agentServices.startRun(
+            payload=payload,
+        ):
+            yield chunk
     except AppError as e:
         raise HTTPException(status_code=e.status_code, detail=e.message)
     except Exception as e:
