@@ -29,11 +29,11 @@ from app.models.AgentModels import (
     AgentPostGenerationInterrupt,
     
 )
+from app.tools.s3Tools import get_file_content_S3, check_if_file_exists_S3, write_file_to_S3
 from app.prompts.detailedDescription import MARKETING_BRIEF_PROMPT
 from app.prompts.postGenerationPrompt import POST_GENERATION_PROMPT
 from app.prompts.postRegenerationPrompt import POST_REGENERATION_PROMPT
 from app.api.depends.repositoryDepends import get_postgres_repository_posts
-from app.repository.s3connection import S3Connection
 
 # TODO: Later on will have model selection for the user so we can use the best model for the task
 LLM = ChatGoogleGenerativeAI(
@@ -41,6 +41,7 @@ LLM = ChatGoogleGenerativeAI(
     google_api_key=config.GEMINI_API_KEY,
 )
 structuredSummaryLLM = LLM.with_structured_output(AgentSummary)
+strcturedSummaryWithTool = structuredSummaryLLM.bind_tools([get_file_content_S3, check_if_file_exists_S3])
 
 PostGenerationLLM = ChatGoogleGenerativeAI(
     model="gemini-3-flash-preview",
@@ -49,6 +50,8 @@ PostGenerationLLM = ChatGoogleGenerativeAI(
 structuredPostGenerationLLM = PostGenerationLLM.with_structured_output(
     LLMPostGeneration
 )
+
+structuredPostGenerationLLMWithTool = structuredPostGenerationLLM.bind_tools([get_file_content_S3, check_if_file_exists_S3])
 
 
 class AgentState(TypedDict):
@@ -60,23 +63,10 @@ class AgentState(TypedDict):
     postToRegenerate: LLMPostGeneration
     currentLoopStartNumber: int
     cacheDraft: LLMPostGeneration
-    # TODO: # this is somehting I am planning to add later on as a feature, this will add more context for the user to generate next posts
-    # reasonForDelteion: list[str]
+    previousNotesSummary: str
+    feedbackSummary: str
 
-async def writeSummaryToS3(notes: AgentSummary, userId: str) -> str:
-    try:
-        await get_s3_connection().put_object(
-            body=notes.marketingBrief,
-            bucketName=config.AWS_BUCKET_NAME,
-            key=f"UserNotes/{userId}/{notes.fileName}",
-        )
-        return f"https://{config.AWS_BUCKET_NAME}.s3.{config.AWS_DEFAULT_REGION}.amazonaws.com/UserNotes/{userId}/{notes.fileName}"
-    except FailedToWriteSummaryToS3:
-        raise
-    except Exception as e:
-        raise FailedToWriteSummaryToS3(f"Failed to write summary to S3 with connection error: {e}") from e
-
-
+# Receiver Node: This Node will validate the payload and return the state
 async def receiverNode(state: AgentState):
     payload = state.get("payload")
     if payload is None:
@@ -91,21 +81,18 @@ async def receiverNode(state: AgentState):
         raise NoStartDateError("No start date found during Agentic RAG Flow")
     return {}
 
-
-async def lookingForKnowledgefromPrviousNotes(state: AgentState):
-    pass
-
-
+# Building Marketing Brief: This Node will build the marketing brief
 async def buildingMarketingBrief(state: AgentState):
     payload = state.get("payload")
 
     prompt = MARKETING_BRIEF_PROMPT.format(
         url=payload.url,
         number_of_posts=payload.numberOfPosts,
+        user_id=payload.userId,
     )
 
     try:
-        response = await structuredSummaryLLM.ainvoke(prompt)
+        response = await strcturedSummaryWithTool.ainvoke(prompt)
 
         if (
             response.marketingBrief is None
@@ -123,7 +110,7 @@ async def buildingMarketingBrief(state: AgentState):
             f"Failed to build marketing brief: {e}"
         ) from e
 
-
+# Generating Marketing Posts: This Node will generate the marketing posts
 async def generatingMarketingPosts(state: AgentState):
     notes = state.get("notes")
     marketingNotes = notes.marketingBrief
@@ -148,7 +135,7 @@ async def generatingMarketingPosts(state: AgentState):
                     ]
                 )
 
-                chain = prompt | structuredPostGenerationLLM
+                chain = prompt | structuredPostGenerationLLMWithTool
 
                 postIndex = post_slot
                 previousPostsSummary = (
@@ -248,7 +235,9 @@ async def regeneratePost(state: AgentState):
     payload = state.get("payload")
     postToRegenerate = state.get("postToRegenerate")
     postRegenerationDescription = state.get("postRegenerationDescription")
-    postGenerateSystemPrompt = POST_REGENERATION_PROMPT
+    postGenerateSystemPrompt = POST_REGENERATION_PROMPT.format(
+        user_id=payload.userId,
+    )
     postsList = state.get("posts") or []
     cacheDraft = state.get("cacheDraft")
     number_of_posts = payload.numberOfPosts
@@ -261,7 +250,7 @@ async def regeneratePost(state: AgentState):
             ("human", "{user_input}"),
         ]
     )
-    chain = prompt | structuredPostGenerationLLM
+    chain = prompt | structuredPostGenerationLLMWithTool
 
     try:
         if cacheDraft is not None:
@@ -270,7 +259,7 @@ async def regeneratePost(state: AgentState):
             postReGenerated = await chain.ainvoke(
                 {
                     "system_instruction": postGenerateSystemPrompt,
-                    "user_input": f"Here is the input 'postToRegenerate': {postToRegenerate.content}, 'postRegenerationDescription': {postRegenerationDescription}, 'Notes': {marketingNotes}, url: {payload.url}, publishDate: {postToRegenerate.publishDate}",
+                    "user_input": f"Here is the input 'postToRegenerate': {postToRegenerate.content}, 'currentFeedback': {postRegenerationDescription}, 'Notes': {marketingNotes}, url: {payload.url}, publishDate: {postToRegenerate.publishDate}",
                 }
             )
 
@@ -347,9 +336,9 @@ async def saveDataToDatabase(state: AgentState, runtime: Runtime):
     threadId = runtime.execution_info.thread_id
 
     try: 
-        notesUrl = await writeSummaryToS3(
-            notes, 
-            payload.userId
+        notesUrl = await get_s3_connection().writeSummaryToS3(
+            notes=notes, 
+            userId=payload.userId
         )
         createdata = []
         for post in posts or []:
