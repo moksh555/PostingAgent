@@ -1,5 +1,4 @@
 import uuid
-from typing import Any
 
 from app.errorsHandler.errors import (
     AppError,
@@ -14,7 +13,7 @@ from app.models.AgentModels import (
     AgentResumeRunRequest,
 )
 from app.models.healthCheckModel import HealthCheckModel
-from langgraph.checkpoint.postgres import PostgresSaver # type: ignore
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # type: ignore
 from app.services.agentGraph import workflow
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer # type: ignore
 from app.api.depends.repositoryDepends import get_postgres_repository_checkpointer
@@ -32,10 +31,18 @@ class AgentServices:
     )
     
     def __init__(self) -> None:
-        self.conn = get_postgres_repository_checkpointer().conn
-        self.checkpointer = PostgresSaver(self.conn, serde=self.SERDE)
-        get_postgres_repository_checkpointer().setup(self.checkpointer)
-        self.graph = workflow.compile(checkpointer=self.checkpointer)
+        self.graph = None
+        self.checkpointer = None
+    
+    @classmethod
+    async def create(cls) -> "AgentServices":
+        instance = cls()
+        repo = await get_postgres_repository_checkpointer()
+        instance.conn = repo.conn
+        instance.checkpointer = AsyncPostgresSaver(instance.conn, serde=cls.SERDE)
+        await repo.setup(instance.checkpointer)
+        instance.graph = workflow.compile(checkpointer=instance.checkpointer)
+        return instance
 
     def get_health_check(self) -> HealthCheckModel:
         return HealthCheckModel(
@@ -43,7 +50,7 @@ class AgentServices:
             message="The Agent Service is running",
         )
 
-    def startRun(
+    async def startRun(
         self, 
         payload: AgentRunRequest
     ):
@@ -52,7 +59,7 @@ class AgentServices:
             threadId = str(uuid.uuid4())
             config = {"configurable": {"thread_id": threadId}}
 
-            for chunk in self.graph.stream(
+            async for chunk in self.graph.astream(
                 {"payload": payload},
                 config=config,
                 stream_mode="updates",
@@ -66,7 +73,7 @@ class AgentServices:
                             body={"node": node_name},
                         ).model_dump_json() + "\n"
 
-            finalView = self._buildClientView(self.graph, threadId, config)
+            finalView = await self._buildClientView(self.graph, threadId, config)
             yield APIResponse(
                 status="ok",
                 state="result",
@@ -77,7 +84,7 @@ class AgentServices:
         except Exception as e:
             raise FailedToStartAgent(str(e)) from e
 
-    def resumeRun(
+    async def resumeRun(
         self,
         payload: AgentResumeRunRequest,
     ):
@@ -85,7 +92,7 @@ class AgentServices:
         try:        
             config = {"configurable": {"thread_id": payload.threadId}}
 
-            for chunk in self.graph.stream(
+            async for chunk in self.graph.astream(
                 Command(resume=payload.decision),
                 config=config,
                 stream_mode="updates",
@@ -100,7 +107,7 @@ class AgentServices:
                             body={"node": node_name},
                         ).model_dump_json() + "\n"
 
-            finalView = self._buildClientView(self.graph, payload.threadId, config)
+            finalView = await self._buildClientView(self.graph, payload.threadId, config)
             yield APIResponse(
                 status="ok",
                 state="result",
@@ -111,8 +118,8 @@ class AgentServices:
         except Exception as e:
             raise FailedToResumeAgent(str(e)) from e
 
-    def _buildClientView(self, graph, threadId: str, config: dict) -> str:
-        snapshot = graph.get_state(config)
+    async def _buildClientView(self, graph, threadId: str, config: dict):
+        snapshot = await graph.aget_state(config)
         values = snapshot.values or {}
         posts = [p.model_dump(mode="json") for p in (values.get("posts") or [])]
 

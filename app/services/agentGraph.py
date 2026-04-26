@@ -1,10 +1,8 @@
 import json
 from datetime import datetime
 from operator import add
-from pathlib import Path
-
 from typing_extensions import TypedDict, Annotated  # type: ignore
-
+from pathlib import Path
 from langchain_core.prompts import ChatPromptTemplate  # type: ignore
 from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
 from langgraph.runtime import Runtime  # type: ignore
@@ -66,20 +64,24 @@ class AgentState(TypedDict):
     # TODO: # this is somehting I am planning to add later on as a feature, this will add more context for the user to generate next posts
     # reasonForDelteion: list[str]
 
-def writeSummaryToS3(notes: AgentSummary, userId: str) -> Path:
+async def writeSummaryToS3(notes: AgentSummary, userId: str) -> Path:
     s3 = S3Connection()
     try:
-        s3.put_object(
+        result = await s3.put_object(
             body=notes.marketingBrief,
             bucketName=config.AWS_BUCKET_NAME,
             key=f"UserNotes/{userId}/{notes.fileName}",
         )
+        if result is None:
+            raise FailedToWriteSummaryToS3("Failed to write summary to S3")
         return f"https://{config.AWS_BUCKET_NAME}.s3.{config.AWS_DEFAULT_REGION}.amazonaws.com/UserNotes/{userId}/{notes.fileName}"
+    except FailedToWriteSummaryToS3:
+        raise
     except Exception as e:
-        raise FailedToWriteSummaryToS3(f"Failed to write summary to S3: {e}") from e
+        raise FailedToWriteSummaryToS3(f"Failed to write summary to S3 with connection error: {e}") from e
 
 
-def receiverNode(state: AgentState):
+async def receiverNode(state: AgentState):
     payload = state.get("payload")
     if payload is None:
         raise NoPayloadError("No payload found during Agentic RAG Flow")
@@ -91,9 +93,10 @@ def receiverNode(state: AgentState):
         raise NoNumberOfPostsError("No number of posts found during Agentic RAG Flow")
     elif payload.startDate is None:
         raise NoStartDateError("No start date found during Agentic RAG Flow")
+    return {}
 
 
-def buildingMarketingBrief(state: AgentState):
+async def buildingMarketingBrief(state: AgentState):
     payload = state.get("payload")
 
     prompt = MARKETING_BRIEF_PROMPT.format(
@@ -102,7 +105,7 @@ def buildingMarketingBrief(state: AgentState):
     )
 
     try:
-        response = structuredSummaryLLM.invoke(prompt)
+        response = await structuredSummaryLLM.ainvoke(prompt)
 
         if (
             response.marketingBrief is None
@@ -121,7 +124,7 @@ def buildingMarketingBrief(state: AgentState):
         ) from e
 
 
-def generatingMarketingPosts(state: AgentState):
+async def generatingMarketingPosts(state: AgentState):
     notes = state.get("notes")
     marketingNotes = notes.marketingBrief
     payload = state.get("payload")
@@ -171,7 +174,7 @@ def generatingMarketingPosts(state: AgentState):
                     f"Generate exactly ONE post for slot {postIndex}."
                 )
 
-                postGenerated = chain.invoke(
+                postGenerated = await chain.ainvoke(
                     {
                         "system_instruction": postGenerateSystemPrompt,
                         "user_input": userInput,
@@ -239,7 +242,7 @@ def generatingMarketingPosts(state: AgentState):
         raise FailedToBuildPosts(f"Failed to build posts: {e}") from e
 
 
-def regeneratePost(state: AgentState):
+async def regeneratePost(state: AgentState):
     notes = state.get("notes")
     marketingNotes = notes.marketingBrief
     payload = state.get("payload")
@@ -264,7 +267,7 @@ def regeneratePost(state: AgentState):
         if cacheDraft is not None:
             postReGenerated = cacheDraft
         else:
-            postReGenerated = chain.invoke(
+            postReGenerated = await chain.ainvoke(
                 {
                     "system_instruction": postGenerateSystemPrompt,
                     "user_input": f"Here is the input 'postToRegenerate': {postToRegenerate.content}, 'postRegenerationDescription': {postRegenerationDescription}, 'Notes': {marketingNotes}, url: {payload.url}, publishDate: {postToRegenerate.publishDate}",
@@ -337,14 +340,14 @@ def regeneratePost(state: AgentState):
     except Exception as e:
         raise FailedToBuildPosts(f"Failed to regenerate post: {e}") from e
 
-def saveDataToDatabase(state: AgentState, runtime: Runtime):
+async def saveDataToDatabase(state: AgentState, runtime: Runtime):
     payload = state.get("payload")
     posts = state.get("posts")
     notes = state.get("notes")
     threadId = runtime.execution_info.thread_id
 
     try: 
-        notesUrl = writeSummaryToS3(
+        notesUrl = await writeSummaryToS3(
             notes, 
             payload.userId
         )
@@ -363,12 +366,15 @@ def saveDataToDatabase(state: AgentState, runtime: Runtime):
                 )
             )
         try:
-            postgresRepository = get_postgres_repository_posts()
-            postgresRepository.saveFinalPostDataExecuteMany(createdata)
+            postgresRepository = await get_postgres_repository_posts()
+            await postgresRepository.saveFinalPostDataExecuteMany(createdata)
         except Exception as e:
             raise FailedToSaveFinalPostData(f"Failed to save final post data: {e}") from e
 
+        return {}
     except FailedToSaveFinalPostData:
+        raise
+    except FailedToWriteSummaryToS3:
         raise
     except Exception as e:
         raise FailedToWriteSummaryToS3(f"Failed to write summary to S3: {e}") from e

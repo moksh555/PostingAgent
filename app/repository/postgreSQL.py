@@ -1,7 +1,6 @@
 from datetime import datetime
-from functools import lru_cache
-from langgraph.checkpoint.postgres import PostgresSaver  # type: ignore
-from psycopg_pool import ConnectionPool  # type: ignore
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # type: ignore
+from psycopg_pool import AsyncConnectionPool  # type: ignore
 
 from configurations.config import config
 
@@ -10,23 +9,35 @@ from app.errorsHandler.errors import FailedToSaveFinalPostData
 
 class PostgreSQLRepository:
     def __init__(self):
-        self.conn = ConnectionPool(
+        self.conn = None
+    
+    @classmethod
+    async def create(cls):
+        instance = cls()
+        instance.conn = AsyncConnectionPool(
             config.POSTGRES_DB_URI,
             min_size=1,
-            max_size=10,
+            max_size=10, 
+            open=False,
             kwargs={"autocommit": True, "prepare_threshold": 0},
         )
+        await instance.conn.open()
+        return instance
 
-    def setup(self, checkpointer: PostgresSaver):
-        checkpointer.setup()
+    async def setup(self, checkpointer: AsyncPostgresSaver):
+        await checkpointer.setup()
     
-    def saveFinalPostDataExecuteMany(self, data: list[tuple[str, str, str, str, datetime, str, datetime, str]]):
+    async def saveFinalPostDataExecuteMany(self, data: list[tuple[str, str, str, str, datetime, str, datetime, str]]):
         try:
-            with self.conn.connection() as conn:
-                with conn.cursor() as cur:
-                    cur.executemany(
+            async with self.conn.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.executemany(
                         "INSERT INTO posts (user_id, source_url, platform, content, publish_date, thread_id, created_at, notes_url) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                         data,
                     )
+                    return {
+                        "status": "success",
+                        "message": "Final post data saved successfully",
+                    }
         except Exception as e:
             raise FailedToSaveFinalPostData(f"Failed to save final post data: {e}") from e

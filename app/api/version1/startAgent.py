@@ -16,7 +16,7 @@ agent_services = AgentServices()
     response_model=AgentRunResponseCompleted,
     status_code=status.HTTP_200_OK,
 )
-def run_agent(
+async def run_agent(
     payload: AgentRunRequest,
     agentServices: AgentServices = Depends(get_agent_services),
     ):
@@ -35,8 +35,6 @@ def run_agent(
             media_type="application/x-ndjson",
         )
     except AppError as e:
-        print("Endpoint: startAgent Error")
-        raise HTTPException(status_code=500, detail=e.message)
+        raise HTTPException(status_code=e.status_code, detail=e.message)
     except Exception as e:
-        print("Endpoint: startAgent Exception")
-        raise HTTPException(status_code=500, detail=e.message)
+        raise HTTPException(status_code=500, detail=str(e))

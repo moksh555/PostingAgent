@@ -111,3 +111,17 @@ class FailedToResumeAgent(AppError):
     status_code = status.HTTP_400_BAD_REQUEST
     code = "failed_to_resume_agent"
     message = "Failed to resume agent"
+
+class FailedToPutObjectToS3(AppError):
+    """Raised when the object fails to be put to S3"""
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "failed_to_put_object_to_s3"
+    message = "Failed to put object to S3"
+
+class FailedToGetFileFromS3(AppError):
+    """Raised when the object fails to be get from S3"""
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "failed_to_get_object_from_s3"
+    message = "Failed to get object from S3"

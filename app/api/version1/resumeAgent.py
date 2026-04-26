@@ -1,6 +1,5 @@
 from fastapi import APIRouter, HTTPException, status, Depends # type: ignore
 from app.models.AgentModels import (
-    AgentPostGenerationInterrupt, 
     AgentRunResponseCompleted,
     AgentResumeRunRequest,
     )
@@ -15,7 +14,7 @@ router = APIRouter()
     response_model=AgentRunResponseCompleted, 
     status_code=status.HTTP_200_OK
     )
-def resume_agent(
+async def resume_agent(
     payload: AgentResumeRunRequest, 
 
     agentServices : AgentServices = Depends(get_agent_services)
