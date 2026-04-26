@@ -1060,10 +1060,11 @@ That was accepted for clarity between checkpoint I/O and app-table
 inserts; it is **not** required for import hygiene — a single pool would
 also work if all code paths shared one `repository.conn`.
 
-**API wiring:** `POST /api/v1/runAgent` uses
-`StreamingResponse(get_agent_services().startRun(payload=...))` so the
-client receives streamed node-update JSON lines plus the final client
-view via the generator contract described in Stage 31.
+**API wiring (superseded in part by Stage 37):** the public entry is
+`POST /api/v1/startAgent` (and `POST /api/v1/resumeAgent` for
+`Command(resume=...)`). The route is an **async generator** that
+`yield`s from `startRun` / `resumeRun`; see Stage 31 for the NDJSON
+line contract and Stage 37 for `EventSourceResponse` + `aget_state`.
 
 
 ## Stage 36 — Async graph hardening, LangGraph reducers, and Python 3.11
@@ -1101,10 +1102,13 @@ coupling to `interrupt()`**.
 - **`response_model=AgentRunResponseCompleted` on a streaming NDJSON
   endpoint** fights the real response shape (stream of
   `APIResponse`-shaped lines, not a single Pydantic body).
-- **Fix:** `async def run_agent` / `resume_agent` with **only** `return
-  StreamingResponse(...)`, no `yield` in the route; **drop
-  `response_model`** on those routes or document the stream in OpenAPI
-  by hand. **CORS:** if a browser UI calls the API from another
+- **Fix (Stage 36):** `async def run_agent` / `resume_agent` with no stray
+  `yield` in `except` that turns the route into a broken generator, and
+  **no** misleading `response_model` on a streaming body. A later
+  iteration (**Stage 37**) moved to **`EventSourceResponse`** and an
+  explicit **`async for ...: yield chunk`** in the route so the async
+  stream is not run through a thread-pool `StreamingResponse` path.
+- **CORS:** if a browser UI calls the API from another
   origin, add `CORSMiddleware` and **import** it from
   `fastapi.middleware.cors` (a `NameError` is easy to introduce when
   pasting middleware without the import).
@@ -1191,14 +1195,55 @@ coupling to `interrupt()`**.
 streaming-only responses), `pyproject.toml` (Python 3.11+).
 
 
+## Stage 37 — `EventSourceResponse`, native `async for` at the route, and `aget_state`
+
+**Motivation:** Wrapping an **async** generator in `StreamingResponse` can
+path through Starlette helpers that run sync iteration in a **thread
+pool** (`anyio.to_thread.run_sync` around `next()`), which is a poor fit
+for true async graph streaming and can interact badly with exception
+propagation (`RuntimeError: response already started`).
+
+**What changed**
+
+- **`POST /api/v1/startAgent`** and **`POST /api/v1/resumeAgent`** are
+  **async generator routes**: `async for chunk in
+  agentServices.startRun(...): yield chunk` (and the same for
+  `resumeRun`). The router declares
+  `response_class=EventSourceResponse` (from `fastapi.sse`) so the
+  framework treats the body as a **Server-Sent Events**-style stream
+  driven in-process without forcing the async generator through a
+  thread-pool `StreamingResponse` wrapper.
+- The **payload** lines are still **NDJSON-style** strings produced in
+  `AgentServices` (`model_dump_json() + "\n"` per
+  `APIResponse`), passed through as yielded chunks. Clients that expect
+  raw `data: {...}` SSE lines may need to align on format; the service
+  layer contract remains “one JSON object per line” for updates and a
+  final `state=result` line.
+- **`_buildClientView`** now uses **`await graph.aget_state(config)`**
+  (async snapshot) instead of `get_state`, which matches
+  **async-compiled** LangGraph + **`AsyncPostgresSaver`** and avoids
+  blocking the event loop on state reads at the end of a run.
+
+**Footgun to avoid:** a module-level `agent_services = AgentServices()`
+in `startAgent.py` (empty graph before `create()`) is **not** the
+instance `Depends(get_agent_services)` injects — remove or use only the
+dependency-injected service for any real work.
+
+**Dependency injection:** `get_agent_services` remains
+`async` with `global _agent_services` and
+`await AgentServices.create()` so a single fully wired
+`AsyncPostgresSaver` + compiled graph is shared across requests.
+
+
 ## What the system does end-to-end today
 
-1. Client `POST /api/v1/runAgent` with `{userId, url, numberOfPosts, startDate}`.
+1. Client `POST /api/v1/startAgent` with `{userId, url, numberOfPosts, startDate}`.
 2. FastAPI validates the body → `AgentRunRequest`.
 3. `get_agent_services().startRun(payload)` streams the compiled LangGraph
    with a stable `thread_id` so the checkpointer can pause / resume across
-   interrupts; the HTTP layer returns a `StreamingResponse` over that
-   generator.
+   interrupts; the HTTP layer returns an **async stream** (yields from the
+   route) with `EventSourceResponse` as `response_class`, instead of
+   wrapping the async generator in `StreamingResponse` alone.
 4. **Validating_Payload** — sanity-checks the payload (redundant with the
    FastAPI boundary, useful for direct-invocation tests).
 5. **Building_Marketing_Brief** — Gemini produces the structured
@@ -1386,3 +1431,11 @@ streaming-only responses), `pyproject.toml` (Python 3.11+).
   nodes (LangGraph’s own `ASYNCIO_ACCEPTS_CONTEXT` gate).
 - **Singleton module globals assigned inside functions need `global x`
   in Python,** or the name shadows and the cache never updates.
+- **Async graph + async checkpointer:** prefer **`await graph.aget_state(...)`**
+  in service code at the end of a run, not **`get_state`**, so you are not
+  blocking the loop on an async-backed snapshot.
+- **`EventSourceResponse` + `async for` / `yield` in the route** can be a
+  better fit than **`StreamingResponse(async_iterator)`** when you want the
+  async generator consumed on the event loop without thread-pool bridging
+  (see Stage 37). Confirm client expectations: NDJSON-in-chunks vs strict
+  `data:` SSE framing.
