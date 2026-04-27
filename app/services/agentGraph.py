@@ -33,6 +33,8 @@ from app.tools.s3Tools import get_file_content_S3, check_if_file_exists_S3, writ
 from app.prompts.detailedDescription import MARKETING_BRIEF_PROMPT
 from app.prompts.postGenerationPrompt import POST_GENERATION_PROMPT
 from app.prompts.postRegenerationPrompt import POST_REGENERATION_PROMPT
+from app.prompts.updateFeebackSummary import UPDATE_FEEDBACK_SUMMARY_PROMPT
+from app.prompts.updatePrviousSummary import UPDATE_PREVIOUS_SUMMARY_PROMPT
 from app.api.depends.repositoryDepends import get_postgres_repository_posts
 
 # TODO: Later on will have model selection for the user so we can use the best model for the task
@@ -40,18 +42,24 @@ LLM = ChatGoogleGenerativeAI(
     model="gemini-3-flash-preview",
     google_api_key=config.GEMINI_API_KEY,
 )
-structuredSummaryLLM = LLM.with_structured_output(AgentSummary)
-strcturedSummaryWithTool = structuredSummaryLLM.bind_tools([get_file_content_S3, check_if_file_exists_S3])
+strcturedSummaryWithTool = LLM.bind_tools(
+    [get_file_content_S3, check_if_file_exists_S3]
+).with_structured_output(AgentSummary)
 
 PostGenerationLLM = ChatGoogleGenerativeAI(
     model="gemini-3-flash-preview",
     google_api_key=config.GEMINI_API_KEY,
 )
-structuredPostGenerationLLM = PostGenerationLLM.with_structured_output(
-    LLMPostGeneration
+structuredPostGenerationLLMWithTool = PostGenerationLLM.bind_tools(
+    [get_file_content_S3, check_if_file_exists_S3]
+).with_structured_output(LLMPostGeneration)
+
+updateLLM = ChatGoogleGenerativeAI(
+    model="gemini-3-flash-preview",
+    google_api_key=config.GEMINI_API_KEY,
 )
 
-structuredPostGenerationLLMWithTool = structuredPostGenerationLLM.bind_tools([get_file_content_S3, check_if_file_exists_S3])
+updateLLMWithTool = updateLLM.bind_tools([get_file_content_S3, check_if_file_exists_S3, write_file_to_S3])
 
 
 class AgentState(TypedDict):
@@ -65,6 +73,10 @@ class AgentState(TypedDict):
     cacheDraft: LLMPostGeneration
     previousNotesSummary: str
     feedbackSummary: str
+    currentFeedback: Annotated[list[str], add]
+    updatedCurrentFeedback: bool = False
+    updatedPreviousSummary: bool = False
+    aggregatedSummary: bool = False
 
 # Receiver Node: This Node will validate the payload and return the state
 async def receiverNode(state: AgentState):
@@ -121,6 +133,7 @@ async def generatingMarketingPosts(state: AgentState):
     currentLoopStartNumber = state.get("currentLoopStartNumber") or 0
     postGenerateSystemPrompt = POST_GENERATION_PROMPT
     cacheDraft = state.get("cacheDraft")
+    currentFeedback = state.get("currentFeedback")
 
     try:
         for loop_i in range(currentLoopStartNumber, numberOfPosts):
@@ -220,6 +233,7 @@ async def generatingMarketingPosts(state: AgentState):
                     "postToRegenerate": postGenerated,
                     "cacheDraft": None,
                     "currentLoopStartNumber": currentLoopStartNumber + 1,
+                    "currentFeedback": currentFeedback + [answer.postChangeDescription],
                 }
     except GraphInterrupt:
         raise
@@ -290,11 +304,13 @@ async def regeneratePost(state: AgentState):
         )
 
         if answer.actions == "Regenerate":
+            currentFeedback = state.get("currentFeedback")
             return {
                 "regeneratePost": True,
                 "postRegenerationDescription": answer.postChangeDescription,
                 "postToRegenerate": postReGenerated,
                 "cacheDraft": None,
+                "currentFeedback": currentFeedback + [answer.postChangeDescription],
             }
         elif answer.actions == "Accept":
             acceptedPosts = AgentPost(
@@ -368,6 +384,82 @@ async def saveDataToDatabase(state: AgentState, runtime: Runtime):
     except Exception as e:
         raise FailedToWriteSummaryToS3(f"Failed to write summary to S3: {e}") from e
 
+async def updateFeedbackSummary(state: AgentState):
+    payload = state.get("payload")
+    userId = payload.userId
+    postsList = state.get("posts")
+    currentFeedback = state.get("currentFeedback")
+    updateFeedbackSystemPrompt = UPDATE_FEEDBACK_SUMMARY_PROMPT.format(
+        user_id=userId,
+    )
+    if len(postsList) > 0:
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", "{system_instruction}"),
+                ("human", "{user_input}"),
+            ]
+        )
+        chain = prompt | updateLLMWithTool
+        response = await chain.ainvoke(
+            {
+                "system_instruction": updateFeedbackSystemPrompt,
+                "user_input": f"Here is the current sessionfeedback: {currentFeedback}",
+            }
+        )
+    return {
+        "updatedCurrentFeedback": True,
+    }
+
+async def updatePreviousSummary(state: AgentState):
+    payload = state.get("payload")
+    userId = payload.userId
+    notes = state.get("notes")
+    marketingNotes = notes.marketingBrief
+    postsList = state.get("posts")
+    updatePreviousSummarySystemPrompt = UPDATE_PREVIOUS_SUMMARY_PROMPT.format(
+        user_id=userId,
+    )
+
+    if len(postsList) > 0:
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", "{system_instruction}"),
+                ("human", "{user_input}"),
+            ]
+        )
+        chain = prompt | updateLLMWithTool
+
+        userInput = (
+        f"Marketing brief:\n{marketingNotes}\n\n"
+        f"Accepted posts this session:\n"
+        + "\n\n".join(
+            f"--- Post {p.postNumber} ---\n{p.content}"
+            for p in postsList
+        )
+        )
+
+        await chain.ainvoke(
+            {
+                    "system_instruction": updatePreviousSummarySystemPrompt,
+                "user_input": userInput,
+            }
+        )
+    return {
+        "updatedPreviousSummary": True,
+    }
+
+async def aggregateSummary(state: AgentState):
+
+    if state.get("updatedCurrentFeedback") and state.get("updatedPreviousSummary"):
+        return {
+            "aggregatedSummary": True,
+        }
+    else:
+        return {
+            "aggregatedSummary": False,
+        }
+
+
 workflow = StateGraph(AgentState)
 
 workflow.add_node(
@@ -401,6 +493,21 @@ workflow.add_node(
 workflow.add_node(
     "Saving_Data_To_Database", 
     saveDataToDatabase
+    )
+
+workflow.add_node(
+    "Updating_Feedback_Summary",
+    updateFeedbackSummary
+    )
+
+workflow.add_node(
+    "Updating_Previous_Summary",
+    updatePreviousSummary
+    )
+
+workflow.add_node(
+    "Aggregating_Summary",
+    aggregateSummary
     )
 
 def routingGneratePostsNode(state: AgentState):
@@ -446,4 +553,8 @@ workflow.add_conditional_edges(
     },
 )
 
-workflow.add_edge("Saving_Data_To_Database", END)
+workflow.add_edge("Saving_Data_To_Database", "Updating_Feedback_Summary")
+workflow.add_edge("Saving_Data_To_Database", "Updating_Previous_Summary")
+workflow.add_edge("Updating_Feedback_Summary", "Aggregating_Summary")
+workflow.add_edge("Updating_Previous_Summary", "Aggregating_Summary")
+workflow.add_edge("Aggregating_Summary", END)

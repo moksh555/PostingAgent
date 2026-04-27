@@ -1,5 +1,5 @@
-from langchain.tools import tool, ToolRuntime #type: ignore
-from app.repository.s3connection import get_s3_connection
+from langchain.tools import tool #type: ignore
+from app.api.depends.repositoryDepends import get_s3_connection
 from configurations.config import config
 
 @tool
@@ -24,7 +24,8 @@ async def get_file_content_S3(key: str) -> str:
         The text content of the file as a string.
     """
     file = await get_s3_connection().get_file(config.AWS_BUCKET_NAME, key)
-    return await file["Body"].read().decode("utf-8")
+    body = await file["Body"].read()
+    return body.decode("utf-8")
 
 @tool
 async def check_if_file_exists_S3(key: str) -> bool:

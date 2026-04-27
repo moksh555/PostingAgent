@@ -8,6 +8,7 @@ dependencies = [
     "aioboto3>=15.5.0",
     "beautifulsoup4>=4.14.3",
     "fastapi[standard]>=0.136.0",
+    "langchain>=1.2.15",
     "langchain-google-genai>=4.2.2",
     "langgraph>=1.1.8",
     "langgraph-checkpoint-postgres>=3.0.5",
