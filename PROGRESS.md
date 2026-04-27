@@ -1284,10 +1284,12 @@ user message.
   that encodes the correct `userId` segment (the marketing prompt injects
   `user_id` for this).
 - **`check_if_file_exists_S3(key: str)`** — boolean, same key rules.
-- **`write_file_to_S3(body: str, key: str)`** — **exists** in `s3Tools.py` for
-  optional writes; the current graph only **`bind_tools([get_file_content_S3,
-  check_if_file_exists_S3])`** on the brief and post chains — add `write_file_to_S3`
-  to `bind_tools(...)` if the product should let the model persist aux files.
+- **`write_file_to_S3(body: str, key: str)`** — in `s3Tools.py` for model-driven
+  writes. **Brief and post** chains typically **`bind_tools([get_file_content_S3,
+  check_if_file_exists_S3])`** only. **`Updating_Feedback_Summary`** and
+  **`Updating_Previous_Summary`** use **`updateLLM.bind_tools([...,
+  write_file_to_S3])`** plus a **tool-execution loop** (see Stage 39) so
+  `write_file_to_S3` actually runs.
 
 **Graph wiring in `app/services/agentGraph.py`:**
 
@@ -1313,6 +1315,43 @@ dedicated nodes again, either populate those keys or remove them from
 `app/api/depends/repositoryDepends.py` returns a process-wide singleton, same
 idea as the Postgres repos.
 
+## Stage 39 — `Building_Context`, S3 knowledge placeholders, and the update-LLM tool loop
+
+**`Building_Context` (node before `Building_Marketing_Brief`):**
+
+- For each run, ensure **`UserNotes/{userId}/knowledge/previous_summary.txt`**
+  and **`.../feedback_summary.txt`** exist. If **`head_object`** (via
+  **`await s3.check_if_file_exists(...)`**) reports missing, the node **`put_object`s
+  an empty body**. Those objects are then **zero-length** until a later step fills
+  them — which is why a manual S3 read right after the first `startAgent` can look
+  “blank” even though the key exists.
+- **Always await** async S3 helpers (`check_if_file_exists`, `put_object`); a bare
+  `if s3.check_if_file_exists(...):` without **`await`** schedules a coroutine that
+  never runs and trips **`RuntimeWarning: coroutine was never awaited`**.
+
+**`Updating_Feedback_Summary` and `Updating_Previous_Summary` (after
+`Saving_Data_To_Database`, in parallel; both feed `Aggregating_Summary`):**
+
+- The prompts (`UPDATE_FEEDBACK_SUMMARY_PROMPT`, `UPDATE_PREVIOUS_SUMMARY_PROMPT`)
+  instruct the model to **read** existing files with tools, then **append** or
+  **overwrite** using **`write_file_to_S3`**.
+- A **single** `ChatPromptTemplate | model.bind_tools([...])` + **`ainvoke`** is
+  **not enough:** the model’s first reply is often an **`AIMessage` with
+  `tool_calls` only** — LangChain does **not** auto-execute tools or send
+  **`ToolMessage`**s back. **`write_file_to_S3` never runs**, so
+  `previous_summary.txt` / `feedback_summary.txt` stay empty after the run.
+- **Fix:** **`_ainvoke_update_llm_with_tool_loop`** in `agentGraph.py` — loop:
+  `await updateLLMWithTool.ainvoke(messages)` → for each `tool_call`, **`await
+  tool.ainvoke(args)`** → append **`ToolMessage`** → repeat until no more
+  `tool_calls` (with a cap on rounds). Only then do reads and writes hit S3.
+- These update nodes only invoke the LLM when **`len(posts) > 0`** (at least one
+  accepted post in state); otherwise they skip the LLM and still return their
+  “updated” flags — **no S3 write** in that case.
+
+**Manual check:** `tests/testing_updatedS3.py` can read
+`UserNotes/<userId>/knowledge/previous_summary.txt` from `Backend/` to verify
+content length after a full run (see Stage 23 for `uv run` pattern).
+
 ## What the system does end-to-end today
 
 1. Client `POST /api/v1/startAgent` with `{userId, url, numberOfPosts, startDate}`.
@@ -1324,7 +1363,10 @@ idea as the Postgres repos.
    wrapping the async generator in `StreamingResponse` alone.
 4. **Validating_Payload** — sanity-checks the payload (redundant with the
    FastAPI boundary, useful for direct-invocation tests).
-5. **Building_Marketing_Brief** — The LLM is **`bind_tools`’d** with
+5. **Building_Context** — ensures S3 keys for **`knowledge/previous_summary.txt`**
+   and **`knowledge/feedback_summary.txt`** exist (empty placeholder `put_object`
+   when missing; Stage 39). **Await** all async S3 calls here.
+6. **Building_Marketing_Brief** — The LLM is **`bind_tools`’d** with
    `get_file_content_S3` and `check_if_file_exists_S3` (Stage 38). The prompt
    (`MARKETING_BRIEF_PROMPT`, with `{user_id}`) steers the model to probe
    `UserNotes/{userId}/knowledge/...` and any prior brief files **before** emitting
@@ -1332,7 +1374,7 @@ idea as the Postgres repos.
    `UserNotes/{userId}/{fileName}` in **Saving_Data_To_Database** via
    `writeSummaryToS3` when the campaign completes. Serde: include
    `AgentSummary` in `JsonPlusSerializer(allowed_msgpack_modules=[...])` (Stage 28).
-6. **Drafting_And_Reviewing_Posts** — state machine; one step per
+7. **Drafting_And_Reviewing_Posts** — state machine; one step per
    invocation:
    - **Produce step** (cache miss): the post chain can use the same S3
      **read/exists** tools (`structuredPostGenerationLLMWithTool`) plus structured
@@ -1340,7 +1382,7 @@ idea as the Postgres repos.
      `cacheDraft`, return. Router loops back for the review step.
    - **Review step** (cache hit): `interrupt(...)` pauses with
      `{postContent, publishDate, actions: [Accept, Reject, Regenerate]}`.
-7. Client resumes via `POST /api/v1/resumeAgent` (body:
+8. Client resumes via `POST /api/v1/resumeAgent` (body:
    `AgentResumeRunRequest` with `threadId` + `decision`); the service passes
    `Command(resume=payload.decision)` into the graph:
    - **Accept** — append `AgentPost`, clear `cacheDraft`, increment
@@ -1353,27 +1395,34 @@ idea as the Postgres repos.
    - **Regenerate** — set `regeneratePost: True`, stash the draft in
      `postToRegenerate`, send `postChangeDescription` along. Router hands
      off to `Regenerating_With_Feedback`.
-8. **Regenerating_With_Feedback** — same produce/review state machine but
+9. **Regenerating_With_Feedback** — same produce/review state machine but
    with `POST_REGENERATION_PROMPT` and access to the previous draft +
    user feedback. Accept / Reject → back to
    `Drafting_And_Reviewing_Posts`; Regenerate self-loops for another
    rewrite.
-9. Consecutive LLM failures on produce-steps raise `FailedToBuildPosts`;
+10. Consecutive LLM failures on produce-steps raise `FailedToBuildPosts`;
    LangGraph's `RetryPolicy(max_attempts=3, backoff_factor=3,
 retry_on=[FailedToBuildPosts])` retries the node. If all three
    attempts exhaust, the exception bubbles up to the caller rather than
    silently landing an empty slot.
-10. Every checkpoint is persisted to **Neon Postgres** via
+11. Every checkpoint is persisted to **Neon Postgres** via
     **`AsyncPostgresSaver`** (see Stage 36–37) on an async pool from the
     checkpointer-side repository, so a run paused at `interrupt(...)` survives
     a process restart and can be resumed later using the same
     `thread_id`.
-11. **Saving_Data_To_Database** — final node: `writeSummaryToS3` for
+12. **Saving_Data_To_Database** — `writeSummaryToS3` for the marketing brief
     notes, then `await get_postgres_repository_posts()` (async factory) and
     `saveFinalPostDataExecuteMany(...)` into the `posts` table
     (Neon, same URI, separate connection pool from the checkpointer
     in the current two-factory design).
-12. The service layer surfaces accepted posts as JSON (see
+13. **Updating_Feedback_Summary** and **Updating_Previous_Summary** — run in
+    **parallel** after saving; each uses **`_ainvoke_update_llm_with_tool_loop`**
+    so **`get_file_content_S3` / `check_if_file_exists_S3` / `write_file_to_S3`**
+    execute for real (Stage 39). Skipped when there are **no accepted posts**
+    in state.
+14. **Aggregating_Summary** — joins the two update branches (both must
+    complete before `END` in the graph).
+15. The service layer surfaces accepted posts as JSON (see
     `await _buildClientView` using **`aget_state`**); the HTTP stream ends
     with the completed client view when the graph reaches `END` or pauses
     for review.
@@ -1538,3 +1587,14 @@ stop: stop.value` pattern, not a plain `for` loop. If you're
 - **`write_file_to_S3` in `s3Tools.py`:** opt-in — add to `bind_tools([...])`
   if the product should allow the model to persist ad-hoc files, and gate in
   the prompt to prevent destructive overwrites.
+- **One `ainvoke` does not run tools.** For models with **`bind_tools`**, a
+  single **`chain.ainvoke`** may return an **`AIMessage` with `tool_calls` only**
+  — you must **execute** each tool, append **`ToolMessage`**, and **call the
+  model again** in a loop until there are no tool calls (as in
+  **`_ainvoke_update_llm_with_tool_loop`**, Stage 39). Otherwise **`write_file_to_S3`**
+  never runs and knowledge files stay empty.
+- **Empty S3 “seed” is still empty on read.** **`Building_Context`** can create
+  **`previous_summary.txt` / `feedback_summary.txt`** with **zero bytes** so later
+  reads and tool calls have a well-defined key; real text appears after
+  **Updating_Previous_Summary** / **Updating_Feedback_Summary** (with accepted
+  posts) completes the tool loop successfully.
