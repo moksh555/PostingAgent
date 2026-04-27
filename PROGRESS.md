@@ -435,19 +435,41 @@ Regen-side mirror:
 
 ## Stage 23 — Graph visualisation helper
 
-- Added `tests/graphGenerating.py` to dump the compiled graph as both a
-  Mermaid string and a `graph.png`. Small but handy during the regen
-  restructure — re-running it after each edit made wiring mistakes
-  immediately obvious.
-- Tricks the script pulls:
-  - Stubs out `IPython.display` before importing the graph module, so
-    LangGraph's `draw_mermaid_png` helpers don't `ModuleNotFoundError` in
-    an environment without IPython.
-  - Adds `Backend/` to `sys.path` so `app.*` and `configurations.*`
-    resolve when running the script directly.
-- Avoided installing Graphviz system-wide (the `pygraphviz` build pulls in
-  C headers); LangGraph's Mermaid renderer covers the same ground with
-  zero native deps.
+- **`tests/graphGenerating.py`** turns the current **`StateGraph`**
+  definition into a diagram so wiring mistakes are obvious after each edit
+  to `app/services/agentGraph.py`.
+
+- **What it imports (important):** the script uses **`from
+  app.services.agentGraph import workflow`**, then **`graph =
+  workflow.compile()`** with **no** checkpointer. The **node/edge** layout
+  matches production because production is the same
+  `workflow.compile(checkpointer=...)` in **`AgentServices.create()`**;
+  only the checkpointer config differs, which does not change the
+  diagram. **`AgentServices().graph` must not** be used here — it stays
+  **`None`** until **`await AgentServices.create()`** has compiled the
+  graph with **`AsyncPostgresSaver`**, so a bare constructor has nothing
+  to draw.
+
+- **Outputs:**
+  1. Prints Mermaid to stdout.
+  2. **Always** writes a sibling **`.mmd`** file (default
+     **`tests/graph.mmd`**, next to **`tests/graph.png`**) with the same
+     source so the layout is versioned even when PNG fails.
+  3. Tries **`graph_view.draw_mermaid_png(...)`** (LangChain’s helper,
+     default: HTTPS to **mermaid.ink**). The script **catches** network /
+     proxy / API failures, prints a short note to **stderr**, and still
+     exits **0** so the workflow remains usable **offline**; open the
+     **`.mmd`** in an editor Mermaid preview or allow outbound HTTPS to
+     render PNG. Retries on the draw call reduce flaky failures when the
+     service is up.
+
+- Prepends **`Backend/`** to **`sys.path`** so
+  `uv run python -m tests.graphGenerating` (or
+  `uv run python tests/graphGenerating.py`) resolves **`app.*`** and
+  **`configurations.*`**. No Graphviz C toolchain is required for the
+  default PNG path; local-only alternatives are the **`.mmd`** file or
+  Pyppeteer-based rendering (see LangChain’s Mermaid error hints) if
+  mermaid.ink is blocked.
 
 ## Stage 24 — Consolidating retries on LangGraph's `RetryPolicy`
 
@@ -1217,6 +1239,7 @@ instance from `create()` is valid for runs.
 | HTTP stream                             | `app/api/version1/startAgent.py`, `resumeAgent.py`           |
 | Python version                          | `pyproject.toml` (`requires-python >= 3.11`)                 |
 | S3 I/O (async) + LLM tools              | `app/repository/s3connection.py`, `app/tools/s3Tools.py`   |
+| Graph diagram (dev)                     | `tests/graphGenerating.py`, `tests/graph.mmd`                |
 
 
 ## Stage 38 — S3 as per-user “memory”: LangChain tools and key layout
@@ -1240,6 +1263,20 @@ user message.
   `AgentSummary.fileName`) — **marketing brief** artefact for a run, same
   pattern as `S3Connection.writeSummaryToS3`.
 
+**Implementation details (not obvious from the public API):**
+
+- **`@tool` imports** use **`from langchain_core.tools import tool`**. The
+  legacy **`langchain.tools`** / top-level **`langchain`** package is **not** a
+  direct `pyproject.toml` dependency, so importing from **`langchain_core`**
+  matches the rest of the stack (`langchain-google-genai` pulls in
+  `langchain-core`).
+- **`get_s3_connection()`** is imported from **`app.api.depends.repositoryDepends`**
+  (the process singleton), not from `s3connection.py` (that module defines
+  **`S3Connection`** only).
+- **Async S3 `get_object` body:** the streaming body is read with
+  **`body = await file["Body"].read()`** then **`body.decode("utf-8")`**
+  (do not call **`.decode()`** on a coroutine).
+
 **Tools (LangChain `@tool` async functions) in this stage:**
 
 - **`get_file_content_S3(key: str)`** — read UTF-8 text; **`key` is the full S3
@@ -1254,12 +1291,13 @@ user message.
 
 **Graph wiring in `app/services/agentGraph.py`:**
 
-- `strcturedSummaryWithTool` = `structuredSummaryLLM.bind_tools([get_file_content_S3,
-  check_if_file_exists_S3])` — used in **`buildingMarketingBrief`** via
-  `ainvoke` (not the unbound `structuredSummaryLLM` only).
-- `structuredPostGenerationLLMWithTool` — same tool pair bound for
-  **`generatingMarketingPosts`** (and the same pattern can apply wherever the
-  post chain is built).
+- **Order matters:** you cannot call **`.bind_tools([...])`** *after*
+  **`.with_structured_output(AgentSummary)`** — the structured-output runnable is
+  a **`RunnableSequence`** that does **not** implement **`bind_tools`**. The
+  working pattern is **`.bind_tools` on the base `ChatGoogleGenerativeAI` first**,
+  then **`.with_structured_output(...)`**:
+  - `strcturedSummaryWithTool` = **`LLM.bind_tools([get_file_content_S3, check_if_file_exists_S3]).with_structured_output(AgentSummary)`** — used in **`buildingMarketingBrief`** via **`ainvoke`**.
+  - `structuredPostGenerationLLMWithTool` = **`PostGenerationLLM.bind_tools([...]).with_structured_output(LLMPostGeneration)`** for **`generatingMarketingPosts`** (and the same pattern where the post chain is built).
 - **`MARKETING_BRIEF_PROMPT`** now formats **`{user_id}`** and instructs the
   model to use the tools to discover prior S3 context before writing the
   structured `AgentSummary`.
@@ -1482,6 +1520,17 @@ stop: stop.value` pattern, not a plain `for` loop. If you're
 - **`bind_tools` is not automatic** — the graph must use the
   *tool-bound* chat model in `ainvoke` (e.g. `strcturedSummaryWithTool`), not
   the plain `with_structured_output` instance alone, or tool calls never run.
+- **`bind_tools` before `with_structured_output` on the base chat model** — the
+  sequence **`model.with_structured_output(Schema).bind_tools([...])`** fails
+  at import time; use **`model.bind_tools([...]).with_structured_output(Schema)`**
+  so tools and schema coercion compose correctly.
+- **`@tool` from `langchain_core.tools`** if you do not add the top-level
+  `langchain` package — keeps imports aligned with `pyproject.toml` and avoids
+  `ModuleNotFoundError: No module named 'langchain'`.
+- **Graph artifacts from `workflow`, not from `AgentServices()`** — the
+  visualisation script compiles **`agentGraph.workflow`** without a
+  checkpointer; **`AgentServices().graph` is `None`** until
+  **`await AgentServices.create()`**.
 - **S3 tool `key` args:** document **full** keys
   `UserNotes/{userId}/…` in tool docstrings; keep bucket writes (e.g. brief
   filename) and tool examples aligned on spelling (`feedback_summary` vs
