@@ -125,3 +125,10 @@ class FailedToGetFileFromS3(AppError):
     status_code = status.HTTP_400_BAD_REQUEST
     code = "failed_to_get_object_from_s3"
     message = "Failed to get object from S3"
+
+class FailedToBuildContext(AppError):
+    """Raised when the context fails to be built"""
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "failed_to_build_context"
+    message = "Failed to build context"

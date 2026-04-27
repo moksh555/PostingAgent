@@ -1,7 +1,13 @@
 import json
 from datetime import datetime
 from operator import add
+from typing import Any
 from typing_extensions import TypedDict, Annotated  # type: ignore
+from langchain_core.messages import (  # type: ignore
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.prompts import ChatPromptTemplate  # type: ignore
 from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
 from langgraph.runtime import Runtime  # type: ignore
@@ -19,7 +25,8 @@ from app.errorsHandler.errors import (
     FailedToBuildMarketingBriefError,
     FailedToBuildPosts,
     FailedToWriteSummaryToS3,
-    FailedToSaveFinalPostData
+    FailedToSaveFinalPostData,
+    FailedToBuildContext
 )
 from app.models.AgentModels import (
     AgentRunRequest,
@@ -62,6 +69,59 @@ updateLLM = ChatGoogleGenerativeAI(
 updateLLMWithTool = updateLLM.bind_tools([get_file_content_S3, check_if_file_exists_S3, write_file_to_S3])
 
 
+def _parse_tool_call(tc: Any) -> tuple[str, dict, str]:
+    if isinstance(tc, dict):
+        args = tc.get("args")
+        if not isinstance(args, dict):
+            args = {}
+        return str(tc["name"]), args, str(tc.get("id") or "")
+    name = getattr(tc, "name", None)
+    args = getattr(tc, "args", None)
+    tid = getattr(tc, "id", None)
+    if name is None:
+        raise TypeError(f"Unrecognized tool_call shape: {tc!r}")
+    if not isinstance(args, dict):
+        args = {}
+    return str(name), args, str(tid or "")
+
+
+async def _ainvoke_update_llm_with_tool_loop(
+    system_instruction: str,
+    user_input: str,
+    *,
+    max_tool_rounds: int = 24,
+) -> None:
+    """Run the update LLM until it stops requesting tools (read / write S3).
+
+    A single ``ainvoke`` on a tool-bound model does **not** execute tools; the model
+    returns ``tool_calls`` and waits for ``ToolMessage`` replies. Without this loop,
+    ``write_file_to_S3`` never runs and knowledge files stay empty.
+    """
+    tool_by_name = {
+        "get_file_content_S3": get_file_content_S3,
+        "check_if_file_exists_S3": check_if_file_exists_S3,
+        "write_file_to_S3": write_file_to_S3,
+    }
+    messages = [
+        SystemMessage(content=system_instruction),
+        HumanMessage(content=user_input),
+    ]
+    for _ in range(max_tool_rounds):
+        ai = await updateLLMWithTool.ainvoke(messages)
+        messages.append(ai)
+        tool_calls = getattr(ai, "tool_calls", None) or []
+        if not tool_calls:
+            return
+        for tc in tool_calls:
+            name, args, tid = _parse_tool_call(tc)
+            tool = tool_by_name.get(name)
+            if tool is None:
+                raise ValueError(f"Unknown tool requested: {name}")
+            out = await tool.ainvoke(args)
+            text = out if isinstance(out, str) else str(out)
+            messages.append(ToolMessage(content=text, tool_call_id=tid))
+
+
 class AgentState(TypedDict):
     payload: AgentRunRequest
     notes: AgentSummary
@@ -93,7 +153,32 @@ async def receiverNode(state: AgentState):
         raise NoStartDateError("No start date found during Agentic RAG Flow")
     return {}
 
-# Building Marketing Brief: This Node will build the marketing brief
+async def buildingContext(state: AgentState):
+    payload = state.get("payload")
+    userId = payload.userId
+    s3 = get_s3_connection()
+
+    try:
+        prev_key = f"UserNotes/{userId}/knowledge/previous_summary.txt"
+        fb_key = f"UserNotes/{userId}/knowledge/feedback_summary.txt"
+        if not await s3.check_if_file_exists(
+            bucketName=config.AWS_BUCKET_NAME, key=prev_key
+        ):
+            await s3.put_object(
+                body="", bucketName=config.AWS_BUCKET_NAME, key=prev_key
+            )
+
+        if not await s3.check_if_file_exists(
+            bucketName=config.AWS_BUCKET_NAME, key=fb_key
+        ):
+            await s3.put_object(
+                body="", bucketName=config.AWS_BUCKET_NAME, key=fb_key
+            )
+        return {}
+    except Exception as e:
+        raise FailedToBuildContext(f"Failed to build context: {e}") from e
+
+
 async def buildingMarketingBrief(state: AgentState):
     payload = state.get("payload")
 
@@ -393,18 +478,9 @@ async def updateFeedbackSummary(state: AgentState):
         user_id=userId,
     )
     if len(postsList) > 0:
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", "{system_instruction}"),
-                ("human", "{user_input}"),
-            ]
-        )
-        chain = prompt | updateLLMWithTool
-        response = await chain.ainvoke(
-            {
-                "system_instruction": updateFeedbackSystemPrompt,
-                "user_input": f"Here is the current sessionfeedback: {currentFeedback}",
-            }
+        await _ainvoke_update_llm_with_tool_loop(
+            updateFeedbackSystemPrompt,
+            f"Here is the current session feedback: {currentFeedback}",
         )
     return {
         "updatedCurrentFeedback": True,
@@ -421,28 +497,17 @@ async def updatePreviousSummary(state: AgentState):
     )
 
     if len(postsList) > 0:
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", "{system_instruction}"),
-                ("human", "{user_input}"),
-            ]
+        user_input = (
+            f"Marketing brief:\n{marketingNotes}\n\n"
+            f"Accepted posts this session:\n"
+            + "\n\n".join(
+                f"--- Post {p.postNumber} ---\n{p.content}"
+                for p in postsList
+            )
         )
-        chain = prompt | updateLLMWithTool
-
-        userInput = (
-        f"Marketing brief:\n{marketingNotes}\n\n"
-        f"Accepted posts this session:\n"
-        + "\n\n".join(
-            f"--- Post {p.postNumber} ---\n{p.content}"
-            for p in postsList
-        )
-        )
-
-        await chain.ainvoke(
-            {
-                    "system_instruction": updatePreviousSummarySystemPrompt,
-                "user_input": userInput,
-            }
+        await _ainvoke_update_llm_with_tool_loop(
+            updatePreviousSummarySystemPrompt,
+            user_input,
         )
     return {
         "updatedPreviousSummary": True,
@@ -465,6 +530,11 @@ workflow = StateGraph(AgentState)
 workflow.add_node(
     "Validating_Payload", 
     receiverNode
+    )
+
+workflow.add_node(
+    "Building_Context",
+    buildingContext
     )
 
 workflow.add_node(
@@ -531,7 +601,8 @@ def routingReGneratePostsNode(state: AgentState):
 
 
 workflow.add_edge(START, "Validating_Payload")
-workflow.add_edge("Validating_Payload", "Building_Marketing_Brief")
+workflow.add_edge("Validating_Payload", "Building_Context")
+workflow.add_edge("Building_Context", "Building_Marketing_Brief")
 workflow.add_edge("Building_Marketing_Brief", "Drafting_And_Reviewing_Posts")
 
 workflow.add_conditional_edges(
