@@ -1,5 +1,9 @@
 # Marketing Agent — Build Progress
 
+> **Repo:** `origin` → `https://github.com/moksh555/PostingAgent.git` (`main` ≈ `origin/main`). **HEAD** `0f6163b928d45be92690b40af10fc0fbee79c09c` — *added loop for tool call in all model calls*. **Previous commit:** `8aaa900` — *update progress.md: tool calling loop*.
+>
+> On a **case-insensitive** filesystem (default macOS APFS), `PROGRESS.md`, `Progress.md`, and `progress.md` are the **same path** — pick one spelling in links and scripts.
+
 A running log of how this project was built, in the order it actually happened.
 Each milestone includes the _why_ behind the decision, the main files touched,
 and any errors that shaped the design.
@@ -1352,25 +1356,29 @@ idea as the Postgres repos.
 `UserNotes/<userId>/knowledge/previous_summary.txt` from `Backend/` to verify
 content length after a full run (see Stage 23 for `uv run` pattern).
 
+## Stage 40 — Tool loop on every tool-bound structured chain; NDJSON error lines; CORS (`0f6163b`)
+
+Stage 39 introduced **`_ainvoke_update_llm_with_tool_loop`** for **`Updating_Feedback_Summary`** and **`Updating_Previous_Summary`**. **`0f6163b`** applies the **same discipline** wherever **`bind_tools(...).with_structured_output(...)`** is used inside the graph: a single **`ainvoke`** can yield **`AIMessage` with `tool_calls` only**, so **`get_file_content_S3`** / **`check_if_file_exists_S3`** (and **`write_file_to_S3`** on update chains) never run unless you **iterate** AIMessage ↔ ToolMessage until the model stops calling tools.
+
+- **`buildingMarketingBrief`** now calls **`_ainvoke_update_llm_with_tool_loop(strcturedSummaryWithTool, ...)`**. The structured **`AgentSummary`** is taken from the **final** AIMessage once tool rounds finish. Guard **`response is None`** and empty **`marketingBrief` / `fileName`** → **`FailedToBuildMarketingBriefError`** so downstream code never sees **`None.marketingBrief`**.
+- **`generatingMarketingPosts`** (cold path) uses the helper for **`structuredPostGenerationLLMWithTool`** before **`interrupt`**; **`Regenerating_With_Feedback`** uses the same pattern so S3 tooling completes before validating **`LLMPostGeneration`**.
+- **`errors.py`** added **`FailedToUpdateFeedbackSummary`** / **`FailedToUpdatePreviousSummary`** (400 **`AppError`**s) wired from the parallel update nodes for clearer semantics under **`RetryPolicy`**.
+- **`POST /api/v1/startAgent`** returns **`StreamingResponse`** over an **`ndjson`** async generator. **`AppError`** and generic exceptions **`yield`** one JSON object per error with **`status`/`state`** error markers instead of **`raise HTTPException`**, so streamed clients parse failures from the stream body.
+- **`main.py`** enables **`CORSMiddleware`** with explicit **`localhost`** / **`127.0.0.1`** on ports **5173** and **5174** (**Vite**) and **`allow_credentials=True`**.
+
 ## What the system does end-to-end today
 
 1. Client `POST /api/v1/startAgent` with `{userId, url, numberOfPosts, startDate}`.
 2. FastAPI validates the body → `AgentRunRequest`.
 3. `get_agent_services().startRun(payload)` streams the compiled LangGraph
    with a stable `thread_id` so the checkpointer can pause / resume across
-   interrupts; the HTTP layer returns an **async stream** (yields from the
-   route) with `EventSourceResponse` as `response_class`, instead of
-   wrapping the async generator in `StreamingResponse` alone.
+   interrupts; the HTTP layer returns **`StreamingResponse`** (**`application/x-ndjson`**, Stage 40) from the **`startAgent`** route; errors **`yield`** JSON error objects on the stream instead of aborting HTTP with **`HTTPException`** alone (Stage 37 described `EventSourceResponse`/`response_class` — superseded).
 4. **Validating_Payload** — sanity-checks the payload (redundant with the
    FastAPI boundary, useful for direct-invocation tests).
 5. **Building_Context** — ensures S3 keys for **`knowledge/previous_summary.txt`**
    and **`knowledge/feedback_summary.txt`** exist (empty placeholder `put_object`
    when missing; Stage 39). **Await** all async S3 calls here.
-6. **Building_Marketing_Brief** — The LLM is **`bind_tools`’d** with
-   `get_file_content_S3` and `check_if_file_exists_S3` (Stage 38). The prompt
-   (`MARKETING_BRIEF_PROMPT`, with `{user_id}`) steers the model to probe
-   `UserNotes/{userId}/knowledge/...` and any prior brief files **before** emitting
-   structured `AgentSummary` as **`notes`**. The same brief is written to
+6. **Building_Marketing_Brief** — Same tool binding as Stage 38; **`0f6163b`** routes **`strcturedSummaryWithTool`** through **`_ainvoke_update_llm_with_tool_loop`** so probes of `UserNotes/{userId}/knowledge/...` finish before **`AgentSummary`** is materialized (**Stage 40**). The brief is written to
    `UserNotes/{userId}/{fileName}` in **Saving_Data_To_Database** via
    `writeSummaryToS3` when the campaign completes. Serde: include
    `AgentSummary` in `JsonPlusSerializer(allowed_msgpack_modules=[...])` (Stage 28).
