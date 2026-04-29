@@ -59,4 +59,5 @@ class S3Connection:
         except Exception as e:
             raise FailedToWriteSummaryToS3(f"Failed to write summary to S3 with connection error: {e}") from e
 
+
        

@@ -132,3 +132,17 @@ class FailedToBuildContext(AppError):
     status_code = status.HTTP_400_BAD_REQUEST
     code = "failed_to_build_context"
     message = "Failed to build context"
+
+class FailedToUpdateFeedbackSummary(AppError):
+    """Raised when the feedback summary fails to be updated"""
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "failed_to_update_feedback_summary"
+    message = "Failed to update feedback summary"
+
+class FailedToUpdatePreviousSummary(AppError):
+    """Raised when the previous summary fails to be updated"""
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "failed_to_update_previous_summary"
+    message = "Failed to update previous summary"

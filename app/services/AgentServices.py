@@ -1,5 +1,7 @@
 import uuid
 
+from langgraph.errors import GraphInterrupt  # type: ignore
+
 from app.errorsHandler.errors import (
     AppError,
     FailedToStartAgent,
@@ -7,10 +9,12 @@ from app.errorsHandler.errors import (
     )
 from langgraph.types import Command  # type: ignore
 from app.models.AgentModels import (
+    AgentPost,
     AgentRunRequest,
     AgentRunResponseCompleted,
     APIResponse,
     AgentResumeRunRequest,
+    LLMPostGeneration,
 )
 from app.models.healthCheckModel import HealthCheckModel
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # type: ignore
@@ -81,6 +85,18 @@ class AgentServices:
             ).model_dump_json() + "\n"
         except AppError:
             raise
+        except GraphInterrupt:
+            try:
+                finalView = await self._buildClientView(self.graph, threadId, config)
+            except ValueError as verr:
+                raise FailedToStartAgent(str(verr)) from verr
+            yield APIResponse(
+                status="ok",
+                state="result",
+                body=finalView,
+            ).model_dump_json() + "\n"
+        except ValueError as verr:
+            raise FailedToStartAgent(str(verr)) from verr
         except Exception as e:
             raise FailedToStartAgent(str(e))
 
@@ -115,36 +131,87 @@ class AgentServices:
             ).model_dump_json() + "\n"
         except AppError:
             raise
+        except GraphInterrupt:
+            try:
+                finalView = await self._buildClientView(self.graph, payload.threadId, config)
+            except ValueError as verr:
+                raise FailedToResumeAgent(str(verr)) from verr
+            yield APIResponse(
+                status="ok",
+                state="result",
+                body=finalView,
+            ).model_dump_json() + "\n"
+        except ValueError as verr:
+            raise FailedToResumeAgent(str(verr)) from verr
         except Exception as e:
             raise FailedToResumeAgent(str(e)) from e
 
     async def _buildClientView(self, graph, threadId: str, config: dict):
         snapshot = await graph.aget_state(config)
         values = snapshot.values or {}
-        posts = [p.model_dump(mode="json") for p in (values.get("posts") or [])]
 
-        if snapshot.next:
-            resumeResponse = AgentRunResponseCompleted(
+        def _normalize_payload() -> AgentRunRequest:
+            raw = values.get("payload")
+            if raw is None:
+                raise ValueError("Checkpoint missing payload")
+            if isinstance(raw, AgentRunRequest):
+                return raw
+            if isinstance(raw, dict):
+                return AgentRunRequest.model_validate(raw)
+            raise ValueError(f"Unexpected payload shape: {type(raw).__name__}")
+
+        def _serialize_posts(raw: list | None):
+            rows = []
+            for p in raw or []:
+                if hasattr(p, "model_dump"):
+                    rows.append(p.model_dump(mode="json"))
+                elif isinstance(p, dict):
+                    rows.append(
+                        AgentPost.model_validate(p).model_dump(mode="json")
+                    )
+            return rows
+
+        posts = _serialize_posts(values.get("posts"))
+
+        payload = _normalize_payload()
+
+        cache_raw = values.get("cacheDraft")
+        cache_draft: LLMPostGeneration | None
+        if cache_raw is None:
+            cache_draft = None
+        elif isinstance(cache_raw, LLMPostGeneration):
+            cache_draft = cache_raw
+        elif hasattr(cache_raw, "model_dump"):
+            cache_draft = LLMPostGeneration.model_validate(
+                cache_raw.model_dump(mode="json")
+            )
+        elif isinstance(cache_raw, dict):
+            cache_draft = LLMPostGeneration.model_validate(cache_raw)
+        else:
+            cache_draft = None
+
+        paused_for_review = bool(snapshot.next) or (cache_draft is not None)
+
+        if paused_for_review:
+            return AgentRunResponseCompleted(
                 threadId=threadId,
                 state="awaiting_review",
-                draft=values.get("cacheDraft"),
+                draft=cache_draft,
                 status="ok",
-                userId=values.get("payload").userId,
+                userId=payload.userId,
                 posts=posts,
-                url=values.get("payload").url,
-                numberOfPosts=values.get("payload").numberOfPosts,
-                startDate=values.get("payload").startDate,
+                url=payload.url,
+                numberOfPosts=payload.numberOfPosts,
+                startDate=payload.startDate,
             )
-            return resumeResponse
 
-        completedResponse = AgentRunResponseCompleted(
+        return AgentRunResponseCompleted(
             status="ok",
             state="completed",
             threadId=threadId,
-            userId=values.get("payload").userId,
+            userId=payload.userId,
             posts=posts,
-            url=values.get("payload").url,
-            numberOfPosts=values.get("payload").numberOfPosts,
-            startDate=values.get("payload").startDate,
+            url=payload.url,
+            numberOfPosts=payload.numberOfPosts,
+            startDate=payload.startDate,
         )
-        return completedResponse

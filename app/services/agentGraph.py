@@ -26,7 +26,9 @@ from app.errorsHandler.errors import (
     FailedToBuildPosts,
     FailedToWriteSummaryToS3,
     FailedToSaveFinalPostData,
-    FailedToBuildContext
+    FailedToBuildContext,
+    FailedToUpdateFeedbackSummary,
+    FailedToUpdatePreviousSummary
 )
 from app.models.AgentModels import (
     AgentRunRequest,
@@ -86,11 +88,13 @@ def _parse_tool_call(tc: Any) -> tuple[str, dict, str]:
 
 
 async def _ainvoke_update_llm_with_tool_loop(
+    model,
     system_instruction: str,
     user_input: str,
     *,
     max_tool_rounds: int = 24,
-) -> None:
+    
+) -> Any:
     """Run the update LLM until it stops requesting tools (read / write S3).
 
     A single ``ainvoke`` on a tool-bound model does **not** execute tools; the model
@@ -107,19 +111,21 @@ async def _ainvoke_update_llm_with_tool_loop(
         HumanMessage(content=user_input),
     ]
     for _ in range(max_tool_rounds):
-        ai = await updateLLMWithTool.ainvoke(messages)
+        ai = await model.ainvoke(messages)
         messages.append(ai)
         tool_calls = getattr(ai, "tool_calls", None) or []
         if not tool_calls:
-            return
+            return ai
         for tc in tool_calls:
             name, args, tid = _parse_tool_call(tc)
             tool = tool_by_name.get(name)
+            print(f"Tool: {tool}")
             if tool is None:
                 raise ValueError(f"Unknown tool requested: {name}")
             out = await tool.ainvoke(args)
             text = out if isinstance(out, str) else str(out)
             messages.append(ToolMessage(content=text, tool_call_id=tid))
+    raise ValueError(f"Model did not finish after {max_tool_rounds} tool rounds")
 
 
 class AgentState(TypedDict):
@@ -189,7 +195,14 @@ async def buildingMarketingBrief(state: AgentState):
     )
 
     try:
-        response = await strcturedSummaryWithTool.ainvoke(prompt)
+        response = await _ainvoke_update_llm_with_tool_loop(
+            strcturedSummaryWithTool,
+            prompt,
+            user_input="Generate a marketing brief for the given URL and make sure if there is already a marketing brief for the given URL, then update the marketing brief",
+        )
+
+        if response is None:
+            raise FailedToBuildMarketingBriefError("Response from model is empty")
 
         if (
             response.marketingBrief is None
@@ -226,14 +239,6 @@ async def generatingMarketingPosts(state: AgentState):
             if cacheDraft is not None:
                 postGenerated = cacheDraft
             else:
-                prompt = ChatPromptTemplate.from_messages(
-                    [
-                        ("system", "{system_instruction}"),
-                        ("human", "{user_input}"),
-                    ]
-                )
-
-                chain = prompt | structuredPostGenerationLLMWithTool
 
                 postIndex = post_slot
                 previousPostsSummary = (
@@ -259,11 +264,10 @@ async def generatingMarketingPosts(state: AgentState):
                     f"Generate exactly ONE post for slot {postIndex}."
                 )
 
-                postGenerated = await chain.ainvoke(
-                    {
-                        "system_instruction": postGenerateSystemPrompt,
-                        "user_input": userInput,
-                    }
+                postGenerated = await _ainvoke_update_llm_with_tool_loop(
+                    structuredPostGenerationLLMWithTool,
+                    postGenerateSystemPrompt,
+                    userInput,
                 )
 
                 if postGenerated.content:
@@ -342,24 +346,16 @@ async def regeneratePost(state: AgentState):
     number_of_posts = payload.numberOfPosts
     reg_slot = len(postsList) + 1
     _reg_loop = f"loop {reg_slot}/{number_of_posts}"
-
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", "{system_instruction}"),
-            ("human", "{user_input}"),
-        ]
-    )
-    chain = prompt | structuredPostGenerationLLMWithTool
+    
 
     try:
         if cacheDraft is not None:
             postReGenerated = cacheDraft
         else:
-            postReGenerated = await chain.ainvoke(
-                {
-                    "system_instruction": postGenerateSystemPrompt,
-                    "user_input": f"Here is the input 'postToRegenerate': {postToRegenerate.content}, 'currentFeedback': {postRegenerationDescription}, 'Notes': {marketingNotes}, url: {payload.url}, publishDate: {postToRegenerate.publishDate}",
-                }
+            postReGenerated = await _ainvoke_update_llm_with_tool_loop(
+                structuredPostGenerationLLMWithTool,
+                postGenerateSystemPrompt,
+                user_input=f"Here is the input 'postToRegenerate': {postToRegenerate.content}, 'currentFeedback': {postRegenerationDescription}, 'Notes': {marketingNotes}, url: {payload.url}, publishDate: {postToRegenerate.publishDate}",
             )
 
             if postReGenerated.content:
@@ -477,14 +473,20 @@ async def updateFeedbackSummary(state: AgentState):
     updateFeedbackSystemPrompt = UPDATE_FEEDBACK_SUMMARY_PROMPT.format(
         user_id=userId,
     )
-    if len(postsList) > 0:
-        await _ainvoke_update_llm_with_tool_loop(
-            updateFeedbackSystemPrompt,
-            f"Here is the current session feedback: {currentFeedback}",
-        )
-    return {
-        "updatedCurrentFeedback": True,
-    }
+    try:
+        if len(postsList) > 0:
+            await _ainvoke_update_llm_with_tool_loop(
+                updateLLMWithTool,  
+                updateFeedbackSystemPrompt,
+                user_input=f"Here is the current session feedback: {currentFeedback}",
+            )
+            return {
+                "updatedCurrentFeedback": True,
+            }
+    except FailedToUpdateFeedbackSummary:
+        raise
+    except Exception as e:
+        raise FailedToUpdateFeedbackSummary(f"Failed to update feedback summary: {e}") from e
 
 async def updatePreviousSummary(state: AgentState):
     payload = state.get("payload")
@@ -495,26 +497,30 @@ async def updatePreviousSummary(state: AgentState):
     updatePreviousSummarySystemPrompt = UPDATE_PREVIOUS_SUMMARY_PROMPT.format(
         user_id=userId,
     )
-
-    if len(postsList) > 0:
-        user_input = (
-            f"Marketing brief:\n{marketingNotes}\n\n"
-            f"Accepted posts this session:\n"
-            + "\n\n".join(
-                f"--- Post {p.postNumber} ---\n{p.content}"
-                for p in postsList
+    try:
+        if len(postsList) > 0:
+            user_input = (
+                f"Marketing brief:\n{marketingNotes}\n\n"
+                f"Accepted posts this session:\n"
+                + "\n\n".join(
+                    f"--- Post {p.postNumber} ---\n{p.content}"
+                    for p in postsList
+                )
             )
-        )
-        await _ainvoke_update_llm_with_tool_loop(
-            updatePreviousSummarySystemPrompt,
-            user_input,
-        )
-    return {
-        "updatedPreviousSummary": True,
-    }
+            await _ainvoke_update_llm_with_tool_loop(
+                updateLLMWithTool,
+                    updatePreviousSummarySystemPrompt,
+                    user_input,
+                )
+            return {
+                "updatedPreviousSummary": True,
+            }
+    except FailedToUpdatePreviousSummary:
+        raise
+    except Exception as e:
+        raise FailedToUpdatePreviousSummary(f"Failed to update previous summary: {e}") from e
 
 async def aggregateSummary(state: AgentState):
-
     if state.get("updatedCurrentFeedback") and state.get("updatedPreviousSummary"):
         return {
             "aggregatedSummary": True,

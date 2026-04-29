@@ -1,5 +1,5 @@
 import logging
-
+from fastapi.middleware.cors import CORSMiddleware #type: ignore
 from fastapi import FastAPI, Request, status  # type: ignore
 from fastapi.exceptions import RequestValidationError  # type: ignore
 from fastapi.responses import JSONResponse  # type: ignore
@@ -15,6 +15,21 @@ app = FastAPI(
     version=APP_VERSION,
 )
 
+origins = [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    # Wildcard origins are invalid with allow_credentials=True; browsers may block responses.
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.exception_handler(AppError)
 async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
