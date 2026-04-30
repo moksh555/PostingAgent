@@ -1,11 +1,13 @@
 import uuid
-
+from datetime import datetime
 from langgraph.errors import GraphInterrupt  # type: ignore
 
 from app.errorsHandler.errors import (
     AppError,
     FailedToStartAgent,
     FailedToResumeAgent,
+    FailedToGetStateForUserThreads,
+    FailedToGetThreads
     )
 from langgraph.types import Command  # type: ignore
 from app.models.AgentModels import (
@@ -16,11 +18,16 @@ from app.models.AgentModels import (
     AgentResumeRunRequest,
     LLMPostGeneration,
 )
+from typing import List
+from app.models.UserModels import (
+    UserThreadState
+)
 from app.models.healthCheckModel import HealthCheckModel
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # type: ignore
 from app.services.agentGraph import workflow
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer # type: ignore
 from app.api.depends.repositoryDepends import get_postgres_repository_checkpointer
+from app.api.depends.repositoryDepends import get_postgres_repository_users_threads
 
 
 class AgentServices:
@@ -61,6 +68,7 @@ class AgentServices:
 
         try:
             threadId = str(uuid.uuid4())
+            
             config = {"configurable": {"thread_id": threadId}}
 
             async for chunk in self.graph.astream(
@@ -83,8 +91,6 @@ class AgentServices:
                 state="result",
                 body=finalView,
             ).model_dump_json() + "\n"
-        except AppError:
-            raise
         except GraphInterrupt:
             try:
                 finalView = await self._buildClientView(self.graph, threadId, config)
@@ -215,3 +221,43 @@ class AgentServices:
             numberOfPosts=payload.numberOfPosts,
             startDate=payload.startDate,
         )
+    
+    async def getStateForUserThreads(self, userId: str) -> List[UserThreadState]:
+        try:
+            postgresDB = await get_postgres_repository_users_threads()
+            threads : list[tuple[str]] =  await postgresDB.getThreads(userId)
+            states: List[UserThreadState] = []
+            for thread in threads:
+                threadId = thread[0]
+                config = {"configurable": {"thread_id": threadId}}
+                snapshot = await self.graph.aget_state(config)
+                values = snapshot.values or {}
+
+                state = {
+                    "status": None,
+                    "threadId": threadId,
+                    "startDate": values.get("payload").startDate,
+                    "numberOfPosts": values.get("payload").numberOfPosts,
+                    "campaignURL": values.get("payload").url,
+                }
+
+                if snapshot.next:
+                    state["status"] = "Paused"
+                else:
+                    if values.get("payload").startDate >= datetime.now():
+                        state["status"] = "Assigned"
+                    else:
+                        state["status"] = "Completed"
+                
+                state["threadId"] = threadId
+                state["startDate"] = values.get("payload").startDate
+                state["numberOfPosts"] = values.get("payload").numberOfPosts
+                state["campaignURL"] = values.get("payload").url
+                
+                modelState = UserThreadState.model_validate(state)
+                states.append(modelState)
+            return states
+        except FailedToGetThreads:
+            raise
+        except Exception as e:
+            raise FailedToGetStateForUserThreads(f"Failed to get state for user threads: {e}") from e

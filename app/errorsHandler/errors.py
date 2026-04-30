@@ -146,3 +146,24 @@ class FailedToUpdatePreviousSummary(AppError):
     status_code = status.HTTP_400_BAD_REQUEST
     code = "failed_to_update_previous_summary"
     message = "Failed to update previous summary"
+
+class FailedToSaveThreadIdForUser(AppError):
+    """Raised when the thread id fails to be saved"""
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "failed_to_save_thread_id_for_user"
+    message = "Failed to save thread id for user"
+
+class FailedToGetThreads(AppError):
+    """Raised when the threads fails to be gotten"""
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "failed_to_get_threads"
+    message = "Failed to get threads"
+
+class FailedToGetStateForUserThreads(AppError):
+    """Raised when the state for user threads fails to be gotten"""
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "failed_to_get_state_for_user_threads"
+    message = "Failed to get state for user threads"

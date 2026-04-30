@@ -4,6 +4,7 @@ from app.repository.s3connection import S3Connection
 _postgres_repository_checkpointer: PostgreSQLRepository | None = None
 _postgres_repository_posts: PostgreSQLRepository | None = None
 _s3_connection: S3Connection | None = None
+_postgres_repository_users_threads: PostgreSQLRepository | None = None
 
 async def get_postgres_repository_checkpointer() -> PostgreSQLRepository:
     global _postgres_repository_checkpointer
@@ -16,6 +17,12 @@ async def get_postgres_repository_posts() -> PostgreSQLRepository:
     if _postgres_repository_posts is None:
         _postgres_repository_posts = await PostgreSQLRepository.create()
     return _postgres_repository_posts
+
+async def get_postgres_repository_users_threads() -> PostgreSQLRepository:
+    global _postgres_repository_users_threads
+    if _postgres_repository_users_threads is None:
+        _postgres_repository_users_threads = await PostgreSQLRepository.create()
+    return _postgres_repository_users_threads
 
 def get_s3_connection() -> S3Connection:
     global _s3_connection

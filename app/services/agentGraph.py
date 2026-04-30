@@ -28,7 +28,8 @@ from app.errorsHandler.errors import (
     FailedToSaveFinalPostData,
     FailedToBuildContext,
     FailedToUpdateFeedbackSummary,
-    FailedToUpdatePreviousSummary
+    FailedToUpdatePreviousSummary,
+    FailedToSaveThreadIdForUser
 )
 from app.models.AgentModels import (
     AgentRunRequest,
@@ -144,8 +145,8 @@ class AgentState(TypedDict):
     updatedPreviousSummary: bool = False
     aggregatedSummary: bool = False
 
-# Receiver Node: This Node will validate the payload and return the state
-async def receiverNode(state: AgentState):
+# Receiver Node: This Node will validate the payload and save the thread id for the user
+async def receiverNode(state: AgentState, runtime: Runtime):
     payload = state.get("payload")
     if payload is None:
         raise NoPayloadError("No payload found during Agentic RAG Flow")
@@ -157,6 +158,12 @@ async def receiverNode(state: AgentState):
         raise NoNumberOfPostsError("No number of posts found during Agentic RAG Flow")
     elif payload.startDate is None:
         raise NoStartDateError("No start date found during Agentic RAG Flow")
+    
+    try:
+        postgresRepository = await get_postgres_repository_posts()
+        await postgresRepository.saveThreadIdForUser(payload.userId, runtime.execution_info.thread_id)
+    except FailedToSaveThreadIdForUser:
+        raise 
     return {}
 
 async def buildingContext(state: AgentState):
