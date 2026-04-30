@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from langgraph.errors import GraphInterrupt  # type: ignore
 
 from app.errorsHandler.errors import (
@@ -54,6 +54,13 @@ class AgentServices:
         await repo.setup(instance.checkpointer)
         instance.graph = workflow.compile(checkpointer=instance.checkpointer)
         return instance
+
+    @staticmethod
+    def _as_utc_aware(dt: datetime) -> datetime:
+        """Comparable instant in UTC — naive payloads are treated as UTC (API contract)."""
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
 
     def get_health_check(self) -> HealthCheckModel:
         return HealthCheckModel(
@@ -227,33 +234,42 @@ class AgentServices:
             postgresDB = await get_postgres_repository_users_threads()
             threads : list[tuple[str]] =  await postgresDB.getThreads(userId)
             states: List[UserThreadState] = []
+            now_utc = datetime.now(timezone.utc)
             for thread in threads:
                 threadId = thread[0]
                 config = {"configurable": {"thread_id": threadId}}
                 snapshot = await self.graph.aget_state(config)
                 values = snapshot.values or {}
 
+                raw_payload = values.get("payload")
+                if raw_payload is None:
+                    continue
+                try:
+                    if isinstance(raw_payload, AgentRunRequest):
+                        payload = raw_payload
+                    elif isinstance(raw_payload, dict):
+                        payload = AgentRunRequest.model_validate(raw_payload)
+                    else:
+                        continue
+                except Exception:
+                    continue
+
+                start_cmp = self._as_utc_aware(payload.startDate)
+                if snapshot.next:
+                    status_str = "Paused"
+                elif start_cmp >= now_utc:
+                    status_str = "Assigned"
+                else:
+                    status_str = "Completed"
+
                 state = {
-                    "status": None,
+                    "status": status_str,
                     "threadId": threadId,
-                    "startDate": values.get("payload").startDate,
-                    "numberOfPosts": values.get("payload").numberOfPosts,
-                    "campaignURL": values.get("payload").url,
+                    "startDate": payload.startDate,
+                    "numberOfPosts": payload.numberOfPosts,
+                    "campaignURL": payload.url,
                 }
 
-                if snapshot.next:
-                    state["status"] = "Paused"
-                else:
-                    if values.get("payload").startDate >= datetime.now():
-                        state["status"] = "Assigned"
-                    else:
-                        state["status"] = "Completed"
-                
-                state["threadId"] = threadId
-                state["startDate"] = values.get("payload").startDate
-                state["numberOfPosts"] = values.get("payload").numberOfPosts
-                state["campaignURL"] = values.get("payload").url
-                
                 modelState = UserThreadState.model_validate(state)
                 states.append(modelState)
             return states
