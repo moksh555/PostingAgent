@@ -1,6 +1,6 @@
 # Marketing Agent — Build Progress
 
-> **Repo:** `origin` → `https://github.com/moksh555/PostingAgent.git` (`main` ≈ `origin/main`). **HEAD** `0f6163b928d45be92690b40af10fc0fbee79c09c` — *added loop for tool call in all model calls*. **Previous commit:** `8aaa900` — *update progress.md: tool calling loop*.
+> **Repo:** `origin` → `https://github.com/moksh555/PostingAgent.git` (`main` ≈ `origin/main`). **HEAD** `cfdd30ff5395dddc259a386de0acb01396c49044` — *added API for user thread*. **Previous commit:** `e1b769a` — *updated progress.md: fixed tool calling in all models*.
 >
 > On a **case-insensitive** filesystem (default macOS APFS), `PROGRESS.md`, `Progress.md`, and `progress.md` are the **same path** — pick one spelling in links and scripts.
 
@@ -1366,6 +1366,16 @@ Stage 39 introduced **`_ainvoke_update_llm_with_tool_loop`** for **`Updating_Fee
 - **`POST /api/v1/startAgent`** returns **`StreamingResponse`** over an **`ndjson`** async generator. **`AppError`** and generic exceptions **`yield`** one JSON object per error with **`status`/`state`** error markers instead of **`raise HTTPException`**, so streamed clients parse failures from the stream body.
 - **`main.py`** enables **`CORSMiddleware`** with explicit **`localhost`** / **`127.0.0.1`** on ports **5173** and **5174** (**Vite**) and **`allow_credentials=True`**.
 
+## Stage 41 — `users_threads` mapping + **`GET /getUserThreadStates`** (`cfdd30f`)
+
+- **Neon `users_threads`** — persists **`user_id`** ↔ **`thread_id`** so clients can list runs; **`PostgreSQLRepository.saveThreadIdForUser`** upserts when **`receiverNode`** runs using **`runtime.execution_info.thread_id`** from the LangGraph runtime.
+- **`getThreads`** — **`SELECT thread_id FROM users_threads WHERE user_id = %s`** (**`app/repository/postgreSQL.py`**).
+- **`AgentServices.getStateForUserThreads`** — for each row, **`graph.aget_state({"configurable": {"thread_id": ...}})`** plus checkpoint **`payload`**; **`Paused`** when **`snapshot.next`** is non-empty; else **`Assigned`** or **`Completed`** from **`payload.startDate`** vs **now**; returns **`UserThreadState`** (**`models/UserModels.py`**).
+- **`GET /api/v1/getUserThreadStates/{userId}`** (**`version1/getUserThreadStates.py`**, mounted in **`router.py`**) — failures raise **`FailedToGetThreads`** / **`FailedToGetStateForUserThreads`** (**`errors.py`**), handled as **`AppError`** in **`main.py`**.
+- **`repositoryDepends`** — **`get_postgres_repository_users_threads()`** singleton pool for **`users_threads`** beside checkpointer/posts.
+
+The separate **PostingAgent-FrontEnd** repo consumes this route for **`PastRun`** (see that repo's **`Progress.md`**).
+
 ## What the system does end-to-end today
 
 1. Client `POST /api/v1/startAgent` with `{userId, url, numberOfPosts, startDate}`.
@@ -1434,6 +1444,11 @@ retry_on=[FailedToBuildPosts])` retries the node. If all three
     `await _buildClientView` using **`aget_state`**); the HTTP stream ends
     with the completed client view when the graph reaches `END` or pauses
     for review.
+16. **`GET /api/v1/getUserThreadStates/{userId}`** (Stage 41) walks **`users_threads`**
+    for that **`user_id`**, loads each **`thread_id`** checkpoint snapshot,
+    and returns **`UserThreadState`** rows (**Paused / Assigned / Completed**)
+    plus campaign fields from **`payload`** — used by dashboards to summarize
+    past and in-flight campaigns.
 
 ## Lessons worth keeping
 
