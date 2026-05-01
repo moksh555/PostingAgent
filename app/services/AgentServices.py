@@ -7,8 +7,9 @@ from app.errorsHandler.errors import (
     FailedToStartAgent,
     FailedToResumeAgent,
     FailedToGetStateForUserThreads,
-    FailedToGetThreads
-    )
+    FailedToGetThreads,
+    FailedToGetThreadSnapshot,
+)
 from langgraph.types import Command  # type: ignore
 from app.models.AgentModels import (
     AgentPost,
@@ -228,7 +229,21 @@ class AgentServices:
             numberOfPosts=payload.numberOfPosts,
             startDate=payload.startDate,
         )
-    
+
+    async def get_thread_snapshot(self, thread_id: str) -> AgentRunResponseCompleted:
+        """Same shape as stream `state=result` body — for reopening Paused runs from the dashboard."""
+        config = {"configurable": {"thread_id": thread_id}}
+        try:
+            return await self._buildClientView(self.graph, thread_id, config)
+        except ValueError as e:
+            raise FailedToGetThreadSnapshot(str(e)) from e
+        except AppError:
+            raise
+        except Exception as e:
+            raise FailedToGetThreadSnapshot(
+                f"Could not load thread snapshot: {e}"
+            ) from e
+
     async def getStateForUserThreads(self, userId: str) -> List[UserThreadState]:
         try:
             postgresDB = await get_postgres_repository_users_threads()
