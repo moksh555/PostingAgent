@@ -1,6 +1,6 @@
 # Marketing Agent — Build Progress
 
-> **Repo:** `origin` → `https://github.com/moksh555/PostingAgent.git` (`main` ≈ `origin/main`). **HEAD** `cfdd30ff5395dddc259a386de0acb01396c49044` — *added API for user thread*. **Previous commit:** `e1b769a` — *updated progress.md: fixed tool calling in all models*.
+> **Repo:** `origin` → `https://github.com/moksh555/PostingAgent.git` (`main` ≈ `origin/main`). **HEAD** `6479aa61877a90e71446756591b04720a62d5154` — *agent thread snapshot endpoint for dashboard resume*. **Previous commit:** `7689456` — *progress update: last runs api*.
 >
 > On a **case-insensitive** filesystem (default macOS APFS), `PROGRESS.md`, `Progress.md`, and `progress.md` are the **same path** — pick one spelling in links and scripts.
 
@@ -1374,9 +1374,21 @@ Stage 39 introduced **`_ainvoke_update_llm_with_tool_loop`** for **`Updating_Fee
 - **`GET /api/v1/getUserThreadStates/{userId}`** (**`version1/getUserThreadStates.py`**, mounted in **`router.py`**) — failures raise **`FailedToGetThreads`** / **`FailedToGetStateForUserThreads`** (**`errors.py`**), handled as **`AppError`** in **`main.py`**.
 - **`repositoryDepends`** — **`get_postgres_repository_users_threads()`** singleton pool for **`users_threads`** beside checkpointer/posts.
 
-The separate **PostingAgent-FrontEnd** repo consumes this route for **`PastRun`** (see that repo's **`Progress.md`**).
+The separate **PostingAgent-FrontEnd** repo consumes this route for **`PastRun`**; **`Progress.md`** there documents **`getAgentThreadSnapshot`** + **`/dashboard/resume/:threadId`** hydration (**Stage 12**).
+
+
+## Stage 42 — **`GET /agentThreadSnapshot/{thread_id}`** for resume hydration (`6479aa6`)
+
+The dashboard opens a past or paused campaign from **`/dashboard/resume/:threadId`** and needs completed posts plus current draft without restarting the SSE stream. **`6479aa6`** exposes a **pull** snapshot that mirrors the completed stream payload shape.
+
+- **`AgentServices.get_thread_snapshot(thread_id)`** — **`graph.aget_state(...)`**, then **`_buildClientView(...)`** to produce **`AgentRunResponseCompleted`** (**`app/services/AgentServices.py`**). Same **`clientView`** normalization as **`startAgent`** / **`resumeAgent`** completion paths where applicable.
+- **`GET /api/v1/agentThreadSnapshot/{thread_id}`** — **`version1/agentThreadSnapshot.py`**, **`router.py`** mounts it under **`/api/v1`** next to **`getUserThreadStates`**.
+- **`errors.py`** — **`FailedToGetThreadSnapshot`** (**`failed_to_get_thread_snapshot`**) for missing thread / serialization / graph errors surfaced as **`AppError`**.
+
+Frontend calls this from **`ServicesAgent.ts`** (`getAgentThreadSnapshot`); see that repo **`Progress.md`**, **Stage 12**.
 
 ## What the system does end-to-end today
+
 
 1. Client `POST /api/v1/startAgent` with `{userId, url, numberOfPosts, startDate}`.
 2. FastAPI validates the body → `AgentRunRequest`.
@@ -1450,7 +1462,10 @@ retry_on=[FailedToBuildPosts])` retries the node. If all three
     plus campaign fields from **`payload`** — used by dashboards to summarize
     past and in-flight campaigns.
 
+17. **`GET /api/v1/agentThreadSnapshot/{thread_id}`** (Stage 42) loads one thread’s **`aget_state`** and returns **`AgentRunResponseCompleted`** (via **`_buildClientView`**) so the UI can hydrate the review carousel and campaign header from a bookmarkable **`/resume/...`** URL without streaming.
+
 ## Lessons worth keeping
+
 
 - **Dependency direction kills circular imports.** A graph module
   must not import a package that eventually imports the graph (e.g.
