@@ -1,3 +1,6 @@
+# Repo root: Backend/ (microservices live in subfolders, e.g. agent_microservice/).
+# Patterns below apply to the whole tree unless anchored.
+
 # ---------------------------------------------------------------------------
 # Secrets / environment
 # ---------------------------------------------------------------------------
@@ -7,6 +10,10 @@
 **/configurations/.env
 **/configurations/.env.*
 !**/configurations/.env.example
+# Legacy layout (repo root had configurations/ next to app/)
+configurations/.env
+configurations/.env.*
+!configurations/.env.example
 
 # ---------------------------------------------------------------------------
 # Python bytecode / caches
