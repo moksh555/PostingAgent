@@ -10,10 +10,6 @@
 **/configurations/.env
 **/configurations/.env.*
 !**/configurations/.env.example
-# Legacy layout (repo root had configurations/ next to app/)
-configurations/.env
-configurations/.env.*
-!configurations/.env.example
 
 # ---------------------------------------------------------------------------
 # Python bytecode / caches
