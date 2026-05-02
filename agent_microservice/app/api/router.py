@@ -9,8 +9,8 @@ from app.api.version1.agentThreadSnapshot import router as agent_thread_snapshot
 
 router = APIRouter()
 
-router.include_router(health_check_router, prefix="/api/v1", tags=["health_check"])
-router.include_router(run_agent_router, prefix="/api/v1", tags=["agent"])
-router.include_router(resume_agent_router, prefix="/api/v1", tags=["agent"])
-router.include_router(get_user_thread_states_router, prefix="/api/v1", tags=["user"])
-router.include_router(agent_thread_snapshot_router, prefix="/api/v1", tags=["agent"])
+router.include_router(health_check_router, prefix="/agentservices/v1", tags=["health_check"])
+router.include_router(run_agent_router, prefix="/agentservices/v1", tags=["agent"])
+router.include_router(resume_agent_router, prefix="/agentServices/v1", tags=["agent"])
+router.include_router(get_user_thread_states_router, prefix="/agentServices/v1", tags=["agent"])
+router.include_router(agent_thread_snapshot_router, prefix="/agentServices/v1", tags=["agent"])

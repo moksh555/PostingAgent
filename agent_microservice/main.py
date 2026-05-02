@@ -1,7 +1,6 @@
 import logging
 from fastapi.middleware.cors import CORSMiddleware #type: ignore
-from fastapi import FastAPI, Request, status  # type: ignore
-from fastapi.exceptions import RequestValidationError  # type: ignore
+from fastapi import FastAPI, Request  # type: ignore
 from fastapi.responses import JSONResponse  # type: ignore
 
 from app.api.router import router as mainRouter
@@ -11,7 +10,7 @@ from app.errorsHandler.errors import AppError
 APP_VERSION = "1.0.0:v1"
 
 app = FastAPI(
-    title="Marketing Agent API",
+    title="Agent Microservice - Marketing Agent",
     version=APP_VERSION,
 )
 
@@ -24,7 +23,6 @@ origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    # Wildcard origins are invalid with allow_credentials=True; browsers may block responses.
     allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
