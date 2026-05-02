@@ -1,0 +1,32 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	Validating_Payload(Validating_Payload)
+	Building_Marketing_Brief(Building_Marketing_Brief)
+	Drafting_And_Reviewing_Posts(Drafting_And_Reviewing_Posts)
+	Regenerating_With_Feedback(Regenerating_With_Feedback)
+	Saving_Data_To_Database(Saving_Data_To_Database)
+	Updating_Feedback_Summary(Updating_Feedback_Summary)
+	Updating_Previous_Summary(Updating_Previous_Summary)
+	Aggregating_Summary(Aggregating_Summary)
+	__end__([<p>__end__</p>]):::last
+	Building_Marketing_Brief --> Drafting_And_Reviewing_Posts;
+	Drafting_And_Reviewing_Posts -.-> Regenerating_With_Feedback;
+	Drafting_And_Reviewing_Posts -.-> Saving_Data_To_Database;
+	Regenerating_With_Feedback -.-> Drafting_And_Reviewing_Posts;
+	Saving_Data_To_Database --> Updating_Feedback_Summary;
+	Saving_Data_To_Database --> Updating_Previous_Summary;
+	Updating_Feedback_Summary --> Aggregating_Summary;
+	Updating_Previous_Summary --> Aggregating_Summary;
+	Validating_Payload --> Building_Marketing_Brief;
+	__start__ --> Validating_Payload;
+	Aggregating_Summary --> __end__;
+	Drafting_And_Reviewing_Posts -.-> Drafting_And_Reviewing_Posts;
+	Regenerating_With_Feedback -.-> Regenerating_With_Feedback;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
