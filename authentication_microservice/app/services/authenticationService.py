@@ -37,20 +37,20 @@ class AuthenticationService:
     def __init__(self, db: PostgreSQLRepository) -> None:
         self._db = db
 
-    async def loginUser(self, userPayload: LoginRequest) -> Token:
+    async def loginUser(self, userPayload: LoginRequest) -> (Token, Token):
 
         try:
             email = userPayload.email.strip().lower()
             password = userPayload.password
 
-            token = await self.authenticateUser(email, password)
-            return token
-        except LoginError:
+            accessToken, refreshToken = await self.authenticateUser(email, password)
+            return (accessToken, refreshToken)
+        except LoginError as e:
             raise
         except Exception as e:
             raise LoginError(str(e)) from e
     
-    async def registerUser(self, userPayload: RegisterRequest) -> Token:
+    async def registerUser(self, userPayload: RegisterRequest) -> (Token, Token):
         user_service = UserService(self._db)
         try:
             user_service.validateUserRegisterPayload(userPayload)
@@ -71,15 +71,24 @@ class AuthenticationService:
                 minutes=config.AUTHENTICATION_ACCESS_TOKEN_EXPIRE_MINUTES,
             )
             data = TokenModel(sub=userId.sub, email=userId.email)
-            access_token = self.encodeAccessToken(data, access_token_expires)
-            return Token(
-                accessToken=access_token,
-                tokenType="bearer",
+            access_token = self._encodeAccessToken(data, access_token_expires)
+            refresh_token_expires = timedelta(
+                days=config.AUTHENTICATION_REFRESH_TOKEN_EXPIRE_DAYS
             )
+            refresh_token = self._encodeRefreshToken(data, refresh_token_expires)
+            accessToken = Token(
+                accessToken=access_token,
+                tokenType="ACCESS_TOKEN",
+            )
+            refreshToken = Token(
+                accessToken=refresh_token,
+                tokenType="REFRESH_TOKEN",
+            )
+            return (accessToken, refreshToken)
         except Exception as e:
             raise RegisterError(str(e)) from e
 
-    async def authenticateUser(self, email: str, password: str) -> Token:
+    async def authenticateUser(self, email: str, password: str) -> (Token, Token):
 
         try:
             if not email:
@@ -97,12 +106,19 @@ class AuthenticationService:
             accessTokenExpires = timedelta(
                 minutes=config.AUTHENTICATION_ACCESS_TOKEN_EXPIRE_MINUTES
             )
-            
-            accessToken = self.encodeAccessToken(data, accessTokenExpires)
-            return Token(
-                accessToken=accessToken,
-                tokenType="bearer",
+            refreshTokenExpires = timedelta(
+                minutes=config.AUTHENTICATION_REFRESH_TOKEN_EXPIRE_DAYS
             )
+            
+            accessToken = self._encodeAccessToken(data, accessTokenExpires)
+            refreshToken = self._encodeRefreshToken(data, refreshTokenExpires)
+            return (Token(
+                accessToken=accessToken,
+                tokenType="ACCESS_TOKEN",
+            ), Token(
+                accessToken=refreshToken,
+                tokenType="REFRESH_TOKEN",
+            ))
         except NotAuthorized:
             raise
         except NoEmailError:
@@ -112,7 +128,7 @@ class AuthenticationService:
         except Exception as e:
             raise LoginError(f"Error: {str(e)}") from e
 
-    def encodeAccessToken(self, data: TokenModel, expireDelta: timedelta | None = None) -> str:
+    def _encodeAccessToken(self, data: TokenModel, expireDelta: timedelta | None = None) -> str:
         to_encode = data.model_dump()
         if expireDelta:
             expire = datetime.now(timezone.utc) + expireDelta
@@ -125,6 +141,48 @@ class AuthenticationService:
             config.AUTHENTICATION_SECRET_KEY,
             algorithm=config.AUTHENTICATION_ALGORITHM,
         )
+    
+    def _encodeRefreshToken(self, data: TokenModel, expireDelta: timedelta | None = None) -> str:
+        to_encode = data.model_dump()
+        if expireDelta:
+            expire = datetime.now(timezone.utc) + expireDelta
+        else:
+            expire = datetime.now(timezone.utc) + timedelta(days=7)
+
+        to_encode["exp"] = expire
+        return jwt.encode(
+            to_encode,
+            config.AUTHENTICATION_REFRESH_SECRET_KEY,
+            algorithm=config.AUTHENTICATION_ALGORITHM,
+        )
+    
+    def generateAccessTokenFromRefreshToken(self, refreshToken: str) -> Token:
+        try :
+            if not refreshToken:
+                raise CredentialException("Refresh token is required")
+            payload = jwt.decode(
+                refreshToken,
+                config.AUTHENTICATION_REFRESH_SECRET_KEY,
+                algorithms=[config.AUTHENTICATION_ALGORITHM],
+            )
+
+            user_id = payload.get("sub")
+            if not user_id:
+                raise CredentialException()
+            if payload.get("exp") < datetime.now(timezone.utc).timestamp():
+                raise NotAuthorized("Refresh token expired")
+            
+            data = TokenModel(sub=payload.get("sub"), email=payload.get("email"))
+            expireDelta = timedelta(
+                minutes=config.AUTHENTICATION_ACCESS_TOKEN_EXPIRE_MINUTES
+            )
+            accessToken = self._encodeAccessToken(data, expireDelta)
+            return Token(
+                accessToken=accessToken,
+                tokenType="ACCESS_TOKEN",
+            )
+        except Exception as e:
+            raise CredentialException(str(e)) from e
 
     def _decode_token_sub(self, token: str) -> str:
         """Validate JWT and return ``sub`` (user id). Raises CredentialException on failure."""

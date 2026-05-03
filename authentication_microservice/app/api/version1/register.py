@@ -17,10 +17,10 @@ async def register(
     auth: AuthenticationService = Depends(get_authentication_service),
 ) -> RegisterResponse:
     try:
-        token = await auth.registerUser(request)
+        (accessToken, refreshToken) = await auth.registerUser(request)
         return RegisterResponse(
-            access_token=token.accessToken,
-            refresh_token="",
+            access_token=accessToken.accessToken,
+            refresh_token=refreshToken.accessToken,
         )
     except RegisterError:
         raise
