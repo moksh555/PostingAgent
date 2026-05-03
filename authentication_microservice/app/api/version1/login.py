@@ -19,8 +19,8 @@ async def login(
     try:
         (accessToken, refreshToken) = await auth.loginUser(request)
         return LoginResponse(
-            access_token= accessToken.accessToken,
-            refresh_token= refreshToken.accessToken,  # TODO: issue refresh token when flow is ready
+            access_token=accessToken.accessToken,
+            refresh_token=refreshToken.accessToken,
         )
     except LoginError:
         raise

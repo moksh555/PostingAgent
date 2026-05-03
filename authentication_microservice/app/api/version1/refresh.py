@@ -19,6 +19,6 @@ async def refresh(
         accessToken = await auth.generateAccessTokenFromRefreshToken(refreshToken)
         return accessToken
     except TokenError:
-        raise 
+        raise
     except Exception as e:
         raise TokenError(str(e)) from e

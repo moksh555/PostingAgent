@@ -107,7 +107,7 @@ class AuthenticationService:
                 minutes=config.AUTHENTICATION_ACCESS_TOKEN_EXPIRE_MINUTES
             )
             refreshTokenExpires = timedelta(
-                minutes=config.AUTHENTICATION_REFRESH_TOKEN_EXPIRE_DAYS
+                days=config.AUTHENTICATION_REFRESH_TOKEN_EXPIRE_DAYS,
             )
             
             accessToken = self._encodeAccessToken(data, accessTokenExpires)
