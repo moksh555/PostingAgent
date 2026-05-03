@@ -1,14 +1,30 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request, status #type: ignore
 from fastapi.exceptions import RequestValidationError #type: ignore
 from fastapi.responses import JSONResponse #type: ignore
 from app.api.router import router as mainRouter
 from fastapi.middleware.cors import CORSMiddleware #type: ignore
 from app.errorsHandler.baseError import AuthenticationError
+from app.repository.postgreSql import PostgreSQLRepository
+from configurations.config import config
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db = PostgreSQLRepository(config.POSTGRES_DB_URI)
+    await db.connect()
+    app.state.db = db
+    try:
+        yield
+    finally:
+        await db.disconnect()
 
 
 app = FastAPI(
     title="Authentication Microservice - User Authentication",
     version="1.0.0:v1",
+    lifespan=lifespan,
 )
 
 

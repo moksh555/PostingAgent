@@ -1,20 +1,23 @@
-from fastapi import APIRouter, status  # type: ignore
+from fastapi import APIRouter, Depends, status  # type: ignore
 
+from app.api.depends.auth import get_authentication_service
 from app.errorsHandler.registerError import RegisterError  # type: ignore
 from app.models.registerModel import RegisterRequest, RegisterResponse  # type: ignore
 from app.services.authenticationService import AuthenticationService  # type: ignore
 
 router = APIRouter()
-_auth = AuthenticationService()
 
 
 @router.post(
     "/register",
     status_code=status.HTTP_200_OK,
 )
-async def register(request: RegisterRequest) -> RegisterResponse:
+async def register(
+    request: RegisterRequest,
+    auth: AuthenticationService = Depends(get_authentication_service),
+) -> RegisterResponse:
     try:
-        token = await _auth.registerUser(request)
+        token = await auth.registerUser(request)
         return RegisterResponse(
             access_token=token.accessToken,
             refresh_token="",

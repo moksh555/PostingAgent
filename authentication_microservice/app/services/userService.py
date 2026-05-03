@@ -8,7 +8,20 @@ from pwdlib import PasswordHash #type: ignore
 
 from app.errorsHandler.registerError import RegisterPayloadError
 from app.models.registerModel import RegisterRequest
-from app.models.userModel import UserModel
+from app.models.userModel import (
+    UserModel, 
+    CreateUserModel,
+    UserPrivateModel
+)
+from app.errorsHandler.userError import (
+    NoUserIdError,
+    NoEmailError
+    )
+from app.repository.postgreSql import PostgreSQLRepository
+from app.repository.userRepository import UserRepository
+from app.errorsHandler.databaseError import (
+    FailedToGetUserFromEmail
+    )
 
 _password_hasher = PasswordHash.recommended()
 
@@ -21,6 +34,9 @@ _PHONE_MAX_LEN = 20
 
 
 class UserService:
+    def __init__(self, db: PostgreSQLRepository) -> None:
+        self.db = db
+
     def validateUserRegisterPayload(self, payload: RegisterRequest) -> None:
         """
         Apply registration rules beyond Pydantic shape validation.
@@ -37,23 +53,47 @@ class UserService:
     async def createUser(self, payload: RegisterRequest) -> UserModel:
         """
         Hash the password and persist a new user.
-
-        TODO: Replace the placeholder ``sub`` with the id returned from the DB insert
-        (repository / ORM session). Map unique-email violations to a register-domain error.
         """
         password_hash = _password_hasher.hash(payload.password)
         userId = str(uuid.uuid4())
-        _pending_user_row = {
-            "user_id": userId,
-            "email": payload.email.strip().lower(),
-            "password_hash": password_hash,
-            "date_of_birth": payload.dateOfBirth,
-            "first_name": payload.firstName.strip().lower(),
-            "last_name": payload.lastName.strip().lower(),
-            "phone_number": payload.phoneNumber.strip(),
-        }
-        # TODO: await user_repository.insert(_pending_user_row) and read back `user_id` / primary key.
-        return userId
+        _pending_user_row = CreateUserModel(
+            sub=userId,
+            email=payload.email.strip().lower(),
+            passwordHash=password_hash,
+            dateOfBirth=payload.dateOfBirth,
+            userFirstName=payload.firstName.strip().lower(),
+            userLastName=payload.lastName.strip().lower(),
+            phoneNumber=payload.phoneNumber.strip(),
+            subcriptionType="free",
+            createdAt=datetime.now(UTC),
+            isActive=True,
+        )
+        user = await UserRepository(self.db).createUser(_pending_user_row)
+        return user
+    
+    async def getUserFromUserId(self, userId: str) -> UserModel:
+        try:
+            userRepository = UserRepository(self.db)
+            user = await userRepository.getUserFromUserId(userId)
+            return user
+        except Exception as e:
+            raise NoUserIdError(str(e)) from e
+    
+    async def getUserFromEmail(self, email: str, private: bool = False) -> UserPrivateModel | UserModel:
+        try:
+            userRepository = UserRepository(self.db)
+            userModel, userPrivateModel = await userRepository.getUserFromEmail(email)
+            if private:
+                return userPrivateModel
+            else:
+                return userModel
+        except NoEmailError:
+            raise
+        except Exception as e:
+            raise FailedToGetUserFromEmail(f"Failed to get user from email: {e}") from e
+
+    def comparePassword(self, password: str, passwordHash: str) -> bool:
+        return _password_hasher.verify(password, passwordHash)
 
     def _validateNames(self, payload: RegisterRequest) -> None:
         if not payload.firstName or not payload.firstName.strip():

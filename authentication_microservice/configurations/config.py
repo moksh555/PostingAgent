@@ -9,6 +9,7 @@ class Config(BaseSettings):
     AUTHENTICATION_SECRET_KEY: str
     AUTHENTICATION_ALGORITHM: str
     AUTHENTICATION_ACCESS_TOKEN_EXPIRE_MINUTES: int
+    POSTGRES_DB_URI: str
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE_PATH,
