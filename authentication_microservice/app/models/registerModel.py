@@ -10,5 +10,5 @@ class RegisterRequest(BaseModel):
     phoneNumber: str = Field(..., description="The phone number of the user")
 
 class RegisterResponse(BaseModel):
-    access_token: str = Field(..., description="The access token of the user")
-    refresh_token: str = Field(..., description="The refresh token of the user")
+    message: str = Field(..., description="The message of the user")
+    status: str = Field(..., description="The status of the user")

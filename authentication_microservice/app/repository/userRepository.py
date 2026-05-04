@@ -39,6 +39,8 @@ class UserRepository:
                 subscriptionType=user["subscription_type"],
             )
             return data
+        except NoUserIdError:
+            raise
         except Exception as e:
             raise FailedToGetUserFromUserId(f"Failed to get user from user id: {e}") from e
     
@@ -55,7 +57,7 @@ class UserRepository:
                 user.createdAt,
                 user.isActive,
                 user.passwordHash,
-                user.subcriptionType,
+                user.subscriptionType,
             )
             return UserModel(
                 email=user.email,
@@ -66,7 +68,7 @@ class UserRepository:
                 dateOfBirth=user.dateOfBirth,
                 createdAt=user.createdAt,
                 isActive=user.isActive,
-                subscriptionType=user.subcriptionType,
+                subscriptionType=user.subscriptionType,
             )
         except Exception as e:
             raise FailedToCreateUser(f"Failed to create user: {e}") from e

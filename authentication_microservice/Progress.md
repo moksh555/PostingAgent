@@ -96,7 +96,7 @@ Paths are **not** under `/api/...` unless you add another prefix in `main.py`.
 - **`registerUser`:** validation + **`createUser`**, then **`_encodeAccessToken`** and **`_encodeRefreshToken`** on **`TokenModel(sub=…, email=…)`**; returns **`(accessToken, refreshToken)`** `Token` pair.
 - **`loginUser` / `authenticateUser`:** normalize email, load user with **`passwordHash`**, **`comparePassword`**; **`NoEmailError`** mapped to **`NotAuthorized`** (same message as bad password); returns **`(accessToken, refreshToken)`**.
 - **`generateAccessTokenFromRefreshToken`:** verifies refresh JWT with **`AUTHENTICATION_REFRESH_SECRET_KEY`**, re-issues access token.
-- **`_encodeAccessToken`** / **`_encodeRefreshToken`:** sign with access vs refresh secret; **`_decode_token_sub`**, **`decodeAccessToken`** for access tokens only (protected routes).
+- **`_encodeAccessToken`** / **`_encodeRefreshToken`:** sign with access vs refresh secret; **`_decode_access_token_payload`**, **`decodeAccessToken`**, **`getUserFromAccessToken`** for access tokens and optional refresh fallback.
 
 ---
 

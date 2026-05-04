@@ -20,14 +20,15 @@ from app.errorsHandler.registerError import (
 )
 from app.services.userService import UserService
 from app.repository.postgreSql import PostgreSQLRepository
+from app.errorsHandler.baseError import AuthenticationError
 from app.errorsHandler.userError import NoEmailError
 from fastapi import Depends #type: ignore
 from configurations.config import config
 from fastapi.security import OAuth2PasswordBearer #type: ignore
 from datetime import datetime, timedelta, timezone
-from typing import Annotated
+from typing import Annotated, Any
 import jwt #type:ignore
-from jwt.exceptions import InvalidTokenError #type:ignore
+from jwt.exceptions import ExpiredSignatureError, InvalidTokenError  # type: ignore
 
 from app.models.userModel import UserModel
 
@@ -98,7 +99,7 @@ class AuthenticationService:
             
             user_service = UserService(self._db)
             userPrivateModel = await user_service.getUserFromEmail(email, private=True)
-            if not user_service.comparePassword(password, userPrivateModel.passwordHash):
+            if not user_service._comparePassword(password, userPrivateModel.passwordHash):
                 raise NotAuthorized("Invalid password")
             
             
@@ -157,21 +158,24 @@ class AuthenticationService:
         )
     
     def generateAccessTokenFromRefreshToken(self, refreshToken: str) -> Token:
-        try :
+        try:
             if not refreshToken:
                 raise CredentialException("Refresh token is required")
-            payload = jwt.decode(
-                refreshToken,
-                config.AUTHENTICATION_REFRESH_SECRET_KEY,
-                algorithms=[config.AUTHENTICATION_ALGORITHM],
-            )
+            try:
+                payload = jwt.decode(
+                    refreshToken,
+                    config.AUTHENTICATION_REFRESH_SECRET_KEY,
+                    algorithms=[config.AUTHENTICATION_ALGORITHM],
+                )
+            except ExpiredSignatureError as e:
+                raise NotAuthorized("Refresh token expired") from e
+            except InvalidTokenError:
+                raise CredentialException()
 
             user_id = payload.get("sub")
             if not user_id:
                 raise CredentialException()
-            if payload.get("exp") < datetime.now(timezone.utc).timestamp():
-                raise NotAuthorized("Refresh token expired")
-            
+
             data = TokenModel(sub=payload.get("sub"), email=payload.get("email"))
             expireDelta = timedelta(
                 minutes=config.AUTHENTICATION_ACCESS_TOKEN_EXPIRE_MINUTES
@@ -181,26 +185,56 @@ class AuthenticationService:
                 accessToken=accessToken,
                 tokenType="ACCESS_TOKEN",
             )
+        except (CredentialException, NotAuthorized):
+            raise
         except Exception as e:
             raise CredentialException(str(e)) from e
 
-    def _decode_token_sub(self, token: str) -> str:
-        """Validate JWT and return ``sub`` (user id). Raises CredentialException on failure."""
+    def _decode_access_token_payload(self, token: str) -> dict[str, Any]:
+        """Decode and validate access JWT. Lets ``ExpiredSignatureError`` propagate (e.g. for refresh). Maps other JWT errors to ``CredentialException``."""
         try:
             payload = jwt.decode(
                 token,
                 config.AUTHENTICATION_SECRET_KEY,
                 algorithms=[config.AUTHENTICATION_ALGORITHM],
             )
-            user_id = payload.get("sub")
-            if not user_id:
-                raise CredentialException()
+        except ExpiredSignatureError:
+            raise
         except InvalidTokenError:
             raise CredentialException()
-        return str(user_id)
+
+        if not payload.get("sub"):
+            raise CredentialException()
+        return payload
 
     async def decodeAccessToken(self, token: Annotated[str, Depends(OAUTH2_SCHEME)]) -> UserModel:
-        user_id = str(self._decode_token_sub(token))
+        """Bearer dependency: expired or invalid access token → ``CredentialException`` (no refresh here)."""
+        try:
+            payload = self._decode_access_token_payload(token)
+            user_service = UserService(self._db)
+            return await user_service.getUserFromUserId(str(payload["sub"]))
+        except ExpiredSignatureError:
+            raise CredentialException("Access token expired") from None
+        except CredentialException:
+            raise
+        except AuthenticationError:
+            raise
+        except Exception as e:
+            raise CredentialException(str(e)) from e
+
+    async def getUserFromAccessToken(self, accessToken: str, refreshToken: str) -> UserModel:
+        """
+        Load user from access JWT. On **expiry only**, exchange ``refreshToken`` for a new access token and retry.
+        Other failures (bad signature, malformed JWT, missing ``sub``) → ``CredentialException`` without refresh.
+        """
         user_service = UserService(self._db)
-        return await user_service.getUserFromUserId(user_id)
-    
+        try:
+            payload = self._decode_access_token_payload(accessToken)
+            return await user_service.getUserFromUserId(str(payload["sub"]))
+        except ExpiredSignatureError:
+            new_access = self.generateAccessTokenFromRefreshToken(refreshToken)
+            return await self.decodeAccessToken(new_access.accessToken)
+        except CredentialException:
+            raise
+        except AuthenticationError:
+            raise

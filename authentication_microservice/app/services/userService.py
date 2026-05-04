@@ -13,10 +13,7 @@ from app.models.userModel import (
     CreateUserModel,
     UserPrivateModel
 )
-from app.errorsHandler.userError import (
-    NoUserIdError,
-    NoEmailError
-    )
+from app.errorsHandler.userError import NoEmailError
 from app.repository.postgreSql import PostgreSQLRepository
 from app.repository.userRepository import UserRepository
 from app.errorsHandler.databaseError import (
@@ -64,7 +61,7 @@ class UserService:
             userFirstName=payload.firstName.strip().lower(),
             userLastName=payload.lastName.strip().lower(),
             phoneNumber=payload.phoneNumber.strip(),
-            subcriptionType="free",
+            subscriptionType="free",
             createdAt=datetime.now(UTC),
             isActive=True,
         )
@@ -72,12 +69,7 @@ class UserService:
         return user
     
     async def getUserFromUserId(self, userId: str) -> UserModel:
-        try:
-            userRepository = UserRepository(self.db)
-            user = await userRepository.getUserFromUserId(userId)
-            return user
-        except Exception as e:
-            raise NoUserIdError(str(e)) from e
+        return await UserRepository(self.db).getUserFromUserId(userId)
     
     async def getUserFromEmail(self, email: str, private: bool = False) -> UserPrivateModel | UserModel:
         try:
@@ -92,7 +84,7 @@ class UserService:
         except Exception as e:
             raise FailedToGetUserFromEmail(f"Failed to get user from email: {e}") from e
 
-    def comparePassword(self, password: str, passwordHash: str) -> bool:
+    def _comparePassword(self, password: str, passwordHash: str) -> bool:
         return _password_hasher.verify(password, passwordHash)
 
     def _validateNames(self, payload: RegisterRequest) -> None:

@@ -7,3 +7,9 @@ class TokenModel(BaseModel):
 class Token(BaseModel):
     accessToken: str
     tokenType: str
+
+
+class RefreshRequest(BaseModel):
+    """Optional JSON body for `/refresh` when not using the HttpOnly cookie."""
+
+    refresh_token: str | None = None

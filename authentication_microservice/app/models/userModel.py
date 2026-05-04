@@ -22,7 +22,7 @@ class CreateUserModel(BaseModel):
     createdAt: datetime = Field(..., description="User created at")
     isActive: bool = Field(..., description="User is active")
     passwordHash: str = Field(..., description="User password hash")
-    subcriptionType: str = Field(..., description="User subscription type") 
+    subscriptionType: str = Field(..., description="User subscription type")
 
 class UserPrivateModel(BaseModel):
     email: str = Field(..., description="Users email")
