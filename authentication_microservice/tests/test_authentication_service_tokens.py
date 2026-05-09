@@ -126,7 +126,7 @@ def test_get_user_from_access_token_does_not_refresh_invalid_access_token(
     service = _service()
     invalid_access_token = jwt.encode(
         {"sub": "user-123", "email": "user@example.com"},
-        "wrong-secret",
+        "wrong-secret-with-32-bytes-minimum",
         algorithm=config.AUTHENTICATION_ALGORITHM,
     )
 
