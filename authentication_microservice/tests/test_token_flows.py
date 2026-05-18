@@ -93,7 +93,7 @@ def test_get_user_from_expired_access_token_refreshes_and_loads_user(monkeypatch
 def test_get_user_from_invalid_access_token_does_not_refresh(monkeypatch):
     service = AuthenticationService(db="db-sentinel")
     wrong_secret_access_token = _jwt(
-        "not-the-access-secret",
+        "not-the-access-secret-but-long-enough",
         {"sub": "user-123", "email": "person@example.com"},
         expires_in=timedelta(minutes=5),
     )
