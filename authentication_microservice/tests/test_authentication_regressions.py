@@ -273,7 +273,13 @@ def test_get_user_from_token_requires_access_and_refresh_cookies(
     cookies: dict[str, str],
     message: str,
 ):
-    response = TestClient(app).get("/userservices/v1/getUserFromToken", cookies=cookies)
+    app.dependency_overrides[get_authentication_service] = lambda: AuthenticationService(
+        db=object(),
+    )
+    client = TestClient(app)
+    client.cookies.update(cookies)
+
+    response = client.get("/userservices/v1/getUserFromToken")
 
     assert response.status_code == 401
     assert response.json() == {"code": "login_error", "message": message}
