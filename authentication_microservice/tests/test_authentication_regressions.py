@@ -225,11 +225,10 @@ def test_refresh_route_accepts_cookie_or_body_refresh_token():
     fake_auth = FakeAuth()
     app.dependency_overrides[get_authentication_service] = lambda: fake_auth
     client = TestClient(app)
+    client.cookies.set("refresh_token", "cookie-refresh")
 
-    cookie_response = client.post(
-        "/userservices/v1/refresh",
-        cookies={"refresh_token": "cookie-refresh"},
-    )
+    cookie_response = client.post("/userservices/v1/refresh")
+    client.cookies.clear()
     body_response = client.post(
         "/userservices/v1/refresh",
         json={"refresh_token": "body-refresh"},
