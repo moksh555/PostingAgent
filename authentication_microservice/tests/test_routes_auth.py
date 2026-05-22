@@ -66,10 +66,10 @@ def test_login_sets_http_only_access_and_refresh_cookies(client_and_auth):
 
 def test_refresh_prefers_refresh_cookie_over_json_body(client_and_auth):
     client, fake_auth = client_and_auth
+    client.cookies.set("refresh_token", "cookie-refresh-token")
 
     response = client.post(
         "/userservices/v1/refresh",
-        cookies={"refresh_token": "cookie-refresh-token"},
         json={"refresh_token": "body-refresh-token"},
     )
 
@@ -112,11 +112,9 @@ def test_refresh_without_cookie_or_body_returns_token_error(client_and_auth):
 
 def test_get_user_from_token_requires_access_cookie(client_and_auth):
     client, _fake_auth = client_and_auth
+    client.cookies.set("refresh_token", "refresh-cookie")
 
-    response = client.get(
-        "/userservices/v1/getUserFromToken",
-        cookies={"refresh_token": "refresh-cookie"},
-    )
+    response = client.get("/userservices/v1/getUserFromToken")
 
     assert response.status_code == 401
     assert response.json() == {
