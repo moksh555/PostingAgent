@@ -1,14 +1,19 @@
 """Shared fixtures for the agent graph test suite.
 
-We set GEMINI_API_KEY *before* any app modules are imported. The module-level
-`ChatGoogleGenerativeAI(google_api_key=config.GEMINI_API_KEY)` construction
-would otherwise fail at import time. We never hit the real Gemini API — every
-test patches the two module-level LLM singletons with RunnableLambda fakes.
+Configuration-backed modules instantiate their clients at import time, so tests
+provide local defaults before importing application code. The real Gemini, S3,
+and Postgres services are never contacted by the unit tests.
 """
 
 import os
 
+os.environ.setdefault("PORT", "8000")
 os.environ.setdefault("GEMINI_API_KEY", "test-key-unused-because-we-mock")
+os.environ.setdefault("POSTGRES_DB_URI", "postgresql://test:test@localhost:5432/test")
+os.environ.setdefault("AWS_ACCESS_KEY_ID", "test")
+os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+os.environ.setdefault("AWS_BUCKET_NAME", "test-bucket")
 
 import uuid
 from datetime import datetime
@@ -18,19 +23,12 @@ import pytest
 from langchain_core.runnables import RunnableLambda  # type: ignore
 
 
-@pytest.fixture(autouse=True)
-def noWritesToDisk(monkeypatch):
-    """Stop buildingMarketingBrief from writing to Backend/testSummary/."""
-    from app.services import agentGraph as AG
-
-    monkeypatch.setattr(AG, "writeSummaryToFile", lambda response: None)
-
-
 @pytest.fixture
 def samplePayload():
     from app.models.AgentModels import AgentRunRequest
 
     return AgentRunRequest(
+        userId="user-123",
         url="https://example.com/docs",
         numberOfPosts=1,
         startDate=datetime(2026, 5, 1, 9, 0),
@@ -42,6 +40,7 @@ def multiPostPayload():
     from app.models.AgentModels import AgentRunRequest
 
     return AgentRunRequest(
+        userId="user-123",
         url="https://example.com/docs",
         numberOfPosts=3,
         startDate=datetime(2026, 5, 1, 9, 0),
