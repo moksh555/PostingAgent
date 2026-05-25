@@ -3,10 +3,9 @@ from unittest.mock import Mock
 
 class TestGetUserFromTokenRoute:
     def test_missing_access_cookie_is_rejected(self, client, fake_auth: Mock) -> None:
-        response = client.get(
-            "/userservices/v1/getUserFromToken",
-            cookies={"refresh_token": "refresh-token"},
-        )
+        client.cookies.set("refresh_token", "refresh-token")
+
+        response = client.get("/userservices/v1/getUserFromToken")
 
         assert response.status_code == 401
         assert response.json() == {
@@ -16,10 +15,9 @@ class TestGetUserFromTokenRoute:
         fake_auth.getUserFromAccessToken.assert_not_awaited()
 
     def test_missing_refresh_cookie_is_rejected(self, client, fake_auth: Mock) -> None:
-        response = client.get(
-            "/userservices/v1/getUserFromToken",
-            cookies={"access_token": "access-token"},
-        )
+        client.cookies.set("access_token", "access-token")
+
+        response = client.get("/userservices/v1/getUserFromToken")
 
         assert response.status_code == 401
         assert response.json() == {
@@ -33,13 +31,10 @@ class TestGetUserFromTokenRoute:
         client,
         fake_auth: Mock,
     ) -> None:
-        response = client.get(
-            "/userservices/v1/getUserFromToken",
-            cookies={
-                "access_token": "access-token",
-                "refresh_token": "refresh-token",
-            },
-        )
+        client.cookies.set("access_token", "access-token")
+        client.cookies.set("refresh_token", "refresh-token")
+
+        response = client.get("/userservices/v1/getUserFromToken")
 
         assert response.status_code == 200
         assert response.json()["sub"] == "user-123"

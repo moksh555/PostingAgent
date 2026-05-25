@@ -3,9 +3,10 @@ from unittest.mock import Mock
 
 class TestRefreshRoute:
     def test_refresh_uses_cookie_before_body(self, client, fake_auth: Mock) -> None:
+        client.cookies.set("refresh_token", "cookie-refresh-token")
+
         response = client.post(
             "/userservices/v1/refresh",
-            cookies={"refresh_token": "cookie-refresh-token"},
             json={"refresh_token": "body-refresh-token"},
         )
 
