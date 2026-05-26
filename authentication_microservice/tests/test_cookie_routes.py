@@ -52,7 +52,7 @@ class CookieIssuingAuth:
 
 
 @pytest.mark.parametrize(
-    ("route_func", "request", "expected_message"),
+    ("route_func", "payload", "expected_message"),
     [
         (
             login,
@@ -75,12 +75,12 @@ class CookieIssuingAuth:
 )
 def test_login_and_register_issue_secure_session_cookies(
     route_func,
-    request,
+    payload,
     expected_message,
 ):
     response = Response()
 
-    result = asyncio.run(route_func(request, response, CookieIssuingAuth()))
+    result = asyncio.run(route_func(payload, response, CookieIssuingAuth()))
 
     assert result.message == expected_message
     headers = _set_cookie_headers(response)
