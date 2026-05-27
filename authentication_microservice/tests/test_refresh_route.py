@@ -35,10 +35,10 @@ def test_refresh_uses_body_token_when_cookie_missing(client):
 def test_refresh_prefers_http_only_cookie_over_body_token(client):
     auth = RecordingRefreshAuth()
     app.dependency_overrides[get_authentication_service] = lambda: auth
+    client.cookies.set("refresh_token", "cookie-refresh-token")
 
     response = client.post(
         "/userservices/v1/refresh",
-        cookies={"refresh_token": "cookie-refresh-token"},
         json={"refresh_token": "body-refresh-token"},
     )
 
