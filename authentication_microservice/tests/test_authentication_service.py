@@ -88,7 +88,7 @@ def test_expired_access_token_uses_refresh_then_retries(auth_service, monkeypatc
 def test_invalid_access_token_does_not_attempt_refresh(auth_service, monkeypatch):
     invalid_access_token = jwt.encode(
         {"sub": "user-123", "email": "user@example.com"},
-        "wrong-secret",
+        "wrong-secret-with-32-plus-bytes",
         algorithm=config.AUTHENTICATION_ALGORITHM,
     )
 
