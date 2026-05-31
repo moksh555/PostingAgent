@@ -61,7 +61,7 @@ class LoginRegisterAuthStub:
 
 
 @pytest.mark.parametrize(
-    ("route_func", "request", "call_name", "message"),
+    ("route_func", "request_obj", "call_name", "message"),
     [
         (
             login_route.login,
@@ -86,18 +86,18 @@ class LoginRegisterAuthStub:
 )
 def test_login_and_register_set_secure_access_and_refresh_cookies(
     route_func,
-    request,
+    request_obj,
     call_name,
     message,
 ):
     response = Response()
     auth = LoginRegisterAuthStub()
 
-    result = asyncio.run(route_func(request=request, response=response, auth=auth))
+    result = asyncio.run(route_func(request=request_obj, response=response, auth=auth))
 
     assert result.message == message
     assert result.status == "success"
-    assert auth.calls == [(call_name, request)]
+    assert auth.calls == [(call_name, request_obj)]
     _assert_auth_cookies(response)
 
 
