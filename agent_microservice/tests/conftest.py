@@ -29,7 +29,7 @@ def noWritesToDisk(monkeypatch):
     """Stop buildingMarketingBrief from writing to Backend/testSummary/."""
     from app.services import agentGraph as AG
 
-    monkeypatch.setattr(AG, "writeSummaryToFile", lambda response: None, raising=False)
+    monkeypatch.setattr(AG, "writeSummaryToFile", lambda response: None)
 
 
 @pytest.fixture
