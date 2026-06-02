@@ -9,12 +9,6 @@ test patches the two module-level LLM singletons with RunnableLambda fakes.
 import os
 
 os.environ.setdefault("GEMINI_API_KEY", "test-key-unused-because-we-mock")
-os.environ.setdefault("PORT", "8000")
-os.environ.setdefault("POSTGRES_DB_URI", "postgresql://test:test@localhost:5432/test")
-os.environ.setdefault("AWS_ACCESS_KEY_ID", "test-access-key")
-os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test-secret-key")
-os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
-os.environ.setdefault("AWS_BUCKET_NAME", "test-bucket")
 
 import uuid
 from datetime import datetime
