@@ -115,7 +115,7 @@ def test_get_user_does_not_refresh_invalid_access_token(monkeypatch, sample_user
             "email": sample_user.email,
             "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
         },
-        "wrong-access-secret",
+        "wrong-access-secret-with-enough-entropy",
         algorithm=config.AUTHENTICATION_ALGORITHM,
     )
 
