@@ -8,7 +8,13 @@ test patches the two module-level LLM singletons with RunnableLambda fakes.
 
 import os
 
+os.environ.setdefault("PORT", "8001")
 os.environ.setdefault("GEMINI_API_KEY", "test-key-unused-because-we-mock")
+os.environ.setdefault("POSTGRES_DB_URI", "postgresql://test:test@localhost:5432/test")
+os.environ.setdefault("AWS_ACCESS_KEY_ID", "test-access-key")
+os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test-secret-key")
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+os.environ.setdefault("AWS_BUCKET_NAME", "test-bucket")
 
 import uuid
 from datetime import datetime
@@ -31,6 +37,7 @@ def samplePayload():
     from app.models.AgentModels import AgentRunRequest
 
     return AgentRunRequest(
+        userId="user-123",
         url="https://example.com/docs",
         numberOfPosts=1,
         startDate=datetime(2026, 5, 1, 9, 0),
@@ -42,6 +49,7 @@ def multiPostPayload():
     from app.models.AgentModels import AgentRunRequest
 
     return AgentRunRequest(
+        userId="user-123",
         url="https://example.com/docs",
         numberOfPosts=3,
         startDate=datetime(2026, 5, 1, 9, 0),
