@@ -24,14 +24,6 @@ import pytest
 from langchain_core.runnables import RunnableLambda  # type: ignore
 
 
-@pytest.fixture(autouse=True)
-def noWritesToDisk(monkeypatch):
-    """Stop buildingMarketingBrief from writing to Backend/testSummary/."""
-    from app.services import agentGraph as AG
-
-    monkeypatch.setattr(AG, "writeSummaryToFile", lambda response: None)
-
-
 @pytest.fixture
 def samplePayload():
     from app.models.AgentModels import AgentRunRequest
