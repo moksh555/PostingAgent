@@ -12,3 +12,12 @@ dependencies = [
     "pydantic[email]>=2.13.3",
     "pyjwt>=2.12.1",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
