@@ -84,7 +84,7 @@ def test_get_user_from_access_token_does_not_refresh_invalid_access(monkeypatch,
     )
     invalid_access = jwt.encode(
         {"sub": user_model.sub, "email": user_model.email},
-        "wrong-access-secret",
+        "wrong-access-secret-at-least-32-bytes",
         algorithm=config.AUTHENTICATION_ALGORITHM,
     )
 
