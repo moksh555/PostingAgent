@@ -91,7 +91,7 @@ def test_invalid_access_token_does_not_attempt_refresh(
             "email": token_data.email,
             "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
         },
-        "wrong-access-secret",
+        "wrong-access-secret-with-32-bytes-minimum",
         algorithm=config.AUTHENTICATION_ALGORITHM,
     )
     valid_refresh_token = service._encodeRefreshToken(token_data, timedelta(minutes=5))
