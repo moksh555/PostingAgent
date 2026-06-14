@@ -98,9 +98,10 @@ def test_login_and_register_set_secure_http_only_token_cookies(
 
 
 def test_refresh_prefers_cookie_token_over_body_token(client, fakeAuth):
+    client.cookies.set("refresh_token", "cookie-token")
+
     response = client.post(
         "/userservices/v1/refresh",
-        cookies={"refresh_token": "cookie-token"},
         json={"refresh_token": "body-token"},
     )
 
@@ -123,10 +124,9 @@ def test_refresh_rejects_missing_refresh_token(client):
 
 
 def test_get_user_from_token_requires_both_cookies(client):
-    response = client.get(
-        "/userservices/v1/getUserFromToken",
-        cookies={"access_token": "access-token"},
-    )
+    client.cookies.set("access_token", "access-token")
+
+    response = client.get("/userservices/v1/getUserFromToken")
 
     assert response.status_code == 401
     assert response.json() == {
@@ -140,13 +140,10 @@ def test_get_user_from_token_passes_access_and_refresh_cookies(
     fakeAuth,
     sampleUser,
 ):
-    response = client.get(
-        "/userservices/v1/getUserFromToken",
-        cookies={
-            "access_token": "access-cookie",
-            "refresh_token": "refresh-cookie",
-        },
-    )
+    client.cookies.set("access_token", "access-cookie")
+    client.cookies.set("refresh_token", "refresh-cookie")
+
+    response = client.get("/userservices/v1/getUserFromToken")
 
     assert response.status_code == 200
     assert response.json()["sub"] == sampleUser.sub
