@@ -100,7 +100,7 @@ class TestAuthenticationServiceRefreshFallback:
         token_data = TokenModel(sub="user-123", email="person@example.com")
         invalid_access = jwt.encode(
             token_data.model_dump(),
-            "wrong-access-secret",
+            "wrong-access-secret-at-least-32-bytes",
             algorithm=config.AUTHENTICATION_ALGORITHM,
         )
         valid_refresh = service._encodeRefreshToken(
