@@ -98,10 +98,10 @@ def test_refresh_prefers_refresh_cookie_over_body_token(app_client):
 
     fake_auth = RefreshAuth()
     _install_auth_override(fake_auth)
+    app_client.cookies.set("refresh_token", "cookie-refresh-token")
 
     response = app_client.post(
         "/userservices/v1/refresh",
-        cookies={"refresh_token": "cookie-refresh-token"},
         json={"refresh_token": "body-refresh-token"},
     )
 
@@ -139,10 +139,10 @@ def test_refresh_accepts_body_token_when_cookie_is_missing(app_client):
 
 
 def test_get_user_from_token_requires_access_cookie(app_client):
-    response = app_client.get(
-        "/userservices/v1/getUserFromToken",
-        cookies={"refresh_token": "refresh-token"},
-    )
+    _install_auth_override(object())
+    app_client.cookies.set("refresh_token", "refresh-token")
+
+    response = app_client.get("/userservices/v1/getUserFromToken")
 
     assert response.status_code == 401
     assert response.json() == {
@@ -165,14 +165,10 @@ def test_get_user_from_token_loads_user_from_access_and_refresh_cookies(
 
     fake_auth = SessionAuth()
     _install_auth_override(fake_auth)
+    app_client.cookies.set("access_token", "access-cookie-token")
+    app_client.cookies.set("refresh_token", "refresh-cookie-token")
 
-    response = app_client.get(
-        "/userservices/v1/getUserFromToken",
-        cookies={
-            "access_token": "access-cookie-token",
-            "refresh_token": "refresh-cookie-token",
-        },
-    )
+    response = app_client.get("/userservices/v1/getUserFromToken")
 
     assert response.status_code == 200
     assert response.json()["sub"] == "user-123"
