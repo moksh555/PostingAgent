@@ -105,10 +105,10 @@ def test_register_sets_secure_httponly_access_and_refresh_cookies():
 def test_refresh_prefers_refresh_cookie_over_body_token():
     fake_auth = FakeAuthService()
     client = _client_with_auth(fake_auth)
+    client.cookies.set("refresh_token", "cookie-refresh")
 
     response = client.post(
         "/userservices/v1/refresh",
-        cookies={"refresh_token": "cookie-refresh"},
         json={"refresh_token": "body-refresh"},
     )
 
