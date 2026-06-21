@@ -95,19 +95,19 @@ def test_login_and_register_set_secure_http_only_cookies(
 
 
 @pytest.mark.parametrize(
-    ("cookies", "json_body", "expected_refresh"),
+    ("cookie_refresh", "json_body", "expected_refresh"),
     [
         (
-            {"refresh_token": "cookie-refresh"},
+            "cookie-refresh",
             {"refresh_token": "body-refresh"},
             "cookie-refresh",
         ),
-        ({}, {"refresh_token": "body-refresh"}, "body-refresh"),
+        (None, {"refresh_token": "body-refresh"}, "body-refresh"),
     ],
 )
 def test_refresh_uses_cookie_before_body_fallback(
     client,
-    cookies,
+    cookie_refresh,
     json_body,
     expected_refresh,
 ):
@@ -119,10 +119,11 @@ def test_refresh_uses_cookie_before_body_fallback(
             return Token(accessToken="new-access-token", tokenType="ACCESS_TOKEN")
 
     app.dependency_overrides[get_authentication_service] = lambda: FakeAuth()
+    if cookie_refresh:
+        client.cookies.set("refresh_token", cookie_refresh)
 
     response = client.post(
         "/userservices/v1/refresh",
-        cookies=cookies,
         json=json_body,
     )
 
@@ -151,10 +152,14 @@ def test_refresh_without_cookie_or_body_token_returns_token_error(client):
 
 
 def test_get_user_from_token_requires_both_auth_cookies(client):
-    response = client.get(
-        "/userservices/v1/getUserFromToken",
-        cookies={"access_token": "access-token-only"},
-    )
+    class FakeAuth:
+        async def getUserFromAccessToken(self, access_token: str, refresh_token: str):
+            raise AssertionError("missing refresh cookie should fail before auth service")
+
+    app.dependency_overrides[get_authentication_service] = lambda: FakeAuth()
+    client.cookies.set("access_token", "access-token-only")
+
+    response = client.get("/userservices/v1/getUserFromToken")
 
     assert response.status_code == 401
     assert response.json() == {
