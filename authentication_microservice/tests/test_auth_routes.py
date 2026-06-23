@@ -121,10 +121,10 @@ def test_login_and_register_issue_secure_http_only_cookies(
 def test_refresh_prefers_cookie_token_over_body_token(client):
     fake_auth = FakeAuth()
     override_auth(fake_auth)
+    client.cookies.set("refresh_token", "cookie-token")
 
     response = client.post(
         "/userservices/v1/refresh",
-        cookies={"refresh_token": "cookie-token"},
         json={"refresh_token": "body-token"},
     )
 
@@ -153,11 +153,10 @@ def test_refresh_returns_credential_error_when_token_missing(client):
 def test_get_user_from_token_requires_access_and_refresh_cookies(client):
     fake_auth = FakeAuth()
     override_auth(fake_auth)
+    client.cookies.set("access_token", "access-cookie")
+    client.cookies.set("refresh_token", "refresh-cookie")
 
-    response = client.get(
-        "/userservices/v1/getUserFromToken",
-        cookies={"access_token": "access-cookie", "refresh_token": "refresh-cookie"},
-    )
+    response = client.get("/userservices/v1/getUserFromToken")
 
     assert response.status_code == 200
     assert response.json()["sub"] == "user-123"
@@ -177,8 +176,10 @@ def test_get_user_from_token_requires_access_and_refresh_cookies(client):
 def test_get_user_from_token_rejects_missing_required_cookies(client, cookies, message):
     fake_auth = FakeAuth()
     override_auth(fake_auth)
+    for name, value in cookies.items():
+        client.cookies.set(name, value)
 
-    response = client.get("/userservices/v1/getUserFromToken", cookies=cookies)
+    response = client.get("/userservices/v1/getUserFromToken")
 
     assert response.status_code == 401
     assert response.json() == {"code": "login_error", "message": message}
