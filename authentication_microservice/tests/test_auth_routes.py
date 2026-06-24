@@ -46,10 +46,10 @@ def build_client(auth_service: StubAuthenticationService) -> TestClient:
 def test_refresh_prefers_cookie_token_over_body_token(sample_user):
     auth = StubAuthenticationService(sample_user)
     client = build_client(auth)
+    client.cookies.set("refresh_token", "cookie-refresh")
 
     response = client.post(
         "/refresh",
-        cookies={"refresh_token": "cookie-refresh"},
         json={"refresh_token": "body-refresh"},
     )
 
@@ -89,11 +89,9 @@ def test_refresh_rejects_missing_token(sample_user):
 def test_get_user_from_token_requires_access_cookie(sample_user):
     auth = StubAuthenticationService(sample_user)
     client = build_client(auth)
+    client.cookies.set("refresh_token", "refresh-token")
 
-    response = client.get(
-        "/getUserFromToken",
-        cookies={"refresh_token": "refresh-token"},
-    )
+    response = client.get("/getUserFromToken")
 
     assert response.status_code == 401
     assert response.json() == {
@@ -106,14 +104,10 @@ def test_get_user_from_token_requires_access_cookie(sample_user):
 def test_get_user_from_token_passes_cookie_pair_to_auth_service(sample_user):
     auth = StubAuthenticationService(sample_user)
     client = build_client(auth)
+    client.cookies.set("access_token", "access-token")
+    client.cookies.set("refresh_token", "refresh-token")
 
-    response = client.get(
-        "/getUserFromToken",
-        cookies={
-            "access_token": "access-token",
-            "refresh_token": "refresh-token",
-        },
-    )
+    response = client.get("/getUserFromToken")
 
     assert response.status_code == 200
     assert response.json()["sub"] == "user-123"
