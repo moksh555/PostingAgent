@@ -129,7 +129,7 @@ def test_invalid_access_token_does_not_attempt_refresh(monkeypatch):
             "email": "user@example.com",
             "exp": datetime.now(UTC) + timedelta(minutes=5),
         },
-        "wrong-access-secret",
+        "wrong-access-secret-with-at-least-32-bytes",
         algorithm=config.AUTHENTICATION_ALGORITHM,
     )
 
