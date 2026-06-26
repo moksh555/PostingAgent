@@ -98,10 +98,10 @@ def test_register_sets_secure_http_only_tokens_without_returning_them(client_fac
 def test_refresh_prefers_cookie_over_body_token(client_factory):
     auth = FakeAuthService()
     client = client_factory(auth)
+    client.cookies.set("refresh_token", "cookie-refresh")
 
     response = client.post(
         "/userservices/v1/refresh",
-        cookies={"refresh_token": "cookie-refresh"},
         json={"refresh_token": "body-refresh"},
     )
 
@@ -157,8 +157,10 @@ def test_refresh_requires_cookie_or_body_token(client_factory):
 def test_get_user_from_token_requires_both_cookies(client_factory, cookies, message):
     auth = FakeAuthService()
     client = client_factory(auth)
+    for name, value in cookies.items():
+        client.cookies.set(name, value)
 
-    response = client.get("/userservices/v1/getUserFromToken", cookies=cookies)
+    response = client.get("/userservices/v1/getUserFromToken")
 
     assert response.status_code == 401
     assert response.json() == {"code": "login_error", "message": message}
@@ -171,14 +173,10 @@ def test_get_user_from_token_forwards_cookie_pair_to_auth_service(
 ):
     auth = FakeAuthService(sample_user)
     client = client_factory(auth)
+    client.cookies.set("access_token", "access-cookie")
+    client.cookies.set("refresh_token", "refresh-cookie")
 
-    response = client.get(
-        "/userservices/v1/getUserFromToken",
-        cookies={
-            "access_token": "access-cookie",
-            "refresh_token": "refresh-cookie",
-        },
-    )
+    response = client.get("/userservices/v1/getUserFromToken")
 
     assert response.status_code == 200
     assert response.json()["sub"] == sample_user.sub
