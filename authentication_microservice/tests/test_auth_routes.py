@@ -59,6 +59,12 @@ def _assert_auth_cookies(response):
     assert "Secure" in set_cookie
 
 
+def _set_client_cookies(client, **cookies: str) -> None:
+    client.cookies.clear()
+    for name, value in cookies.items():
+        client.cookies.set(name, value)
+
+
 def test_login_sets_secure_http_only_access_and_refresh_cookies(client):
     class FakeAuth:
         async def loginUser(self, request_obj):
@@ -103,10 +109,10 @@ def test_refresh_prefers_cookie_over_body_token(client):
 
     fake_auth = FakeAuth()
     app.dependency_overrides[get_authentication_service] = lambda: fake_auth
+    _set_client_cookies(client, refresh_token="cookie-refresh")
 
     response = client.post(
         "/userservices/v1/refresh",
-        cookies={"refresh_token": "cookie-refresh"},
         json={"refresh_token": "body-refresh"},
     )
 
@@ -164,14 +170,14 @@ def test_get_user_from_token_requires_access_and_refresh_cookies(client):
             raise AssertionError("auth lookup should not run without both cookies")
 
     app.dependency_overrides[get_authentication_service] = lambda: UnusedAuth()
+    _set_client_cookies(client, refresh_token="refresh-cookie")
 
     missing_access = client.get(
         "/userservices/v1/getUserFromToken",
-        cookies={"refresh_token": "refresh-cookie"},
     )
+    _set_client_cookies(client, access_token="access-cookie")
     missing_refresh = client.get(
         "/userservices/v1/getUserFromToken",
-        cookies={"access_token": "access-cookie"},
     )
 
     assert missing_access.status_code == 401
@@ -200,13 +206,14 @@ def test_get_user_from_token_forwards_cookie_pair_to_auth_service(client):
 
     fake_auth = FakeAuth()
     app.dependency_overrides[get_authentication_service] = lambda: fake_auth
+    _set_client_cookies(
+        client,
+        access_token="access-cookie",
+        refresh_token="refresh-cookie",
+    )
 
     response = client.get(
         "/userservices/v1/getUserFromToken",
-        cookies={
-            "access_token": "access-cookie",
-            "refresh_token": "refresh-cookie",
-        },
     )
 
     assert response.status_code == 200
