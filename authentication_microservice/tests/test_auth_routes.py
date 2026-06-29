@@ -90,10 +90,10 @@ def test_refresh_prefers_cookie_token_over_body_token(auth_app) -> None:
     fake_auth = RefreshAuth()
     auth_app.dependency_overrides[get_authentication_service] = lambda: fake_auth
     client = TestClient(auth_app)
+    client.cookies.set("refresh_token", "cookie-token")
 
     response = client.post(
         "/userservices/v1/refresh",
-        cookies={"refresh_token": "cookie-token"},
         json={"refresh_token": "body-token"},
     )
 
@@ -141,23 +141,16 @@ def test_get_user_from_token_requires_and_forwards_cookie_pair(auth_app) -> None
     fake_auth = GetUserAuth()
     auth_app.dependency_overrides[get_authentication_service] = lambda: fake_auth
     client = TestClient(auth_app)
+    client.cookies.set("access_token", "access-token")
 
-    missing_response = client.get(
-        "/userservices/v1/getUserFromToken",
-        cookies={"access_token": "access-token"},
-    )
+    missing_response = client.get("/userservices/v1/getUserFromToken")
     assert missing_response.status_code == 401
     assert missing_response.json()["message"] == (
         "Unauthorized Access: No Refresh Token provided"
     )
 
-    response = client.get(
-        "/userservices/v1/getUserFromToken",
-        cookies={
-            "access_token": "access-token",
-            "refresh_token": "refresh-token",
-        },
-    )
+    client.cookies.set("refresh_token", "refresh-token")
+    response = client.get("/userservices/v1/getUserFromToken")
 
     assert response.status_code == 200
     assert response.json()["sub"] == "user-1"
