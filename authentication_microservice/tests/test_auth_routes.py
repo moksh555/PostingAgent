@@ -111,11 +111,11 @@ def test_register_sets_secure_httponly_access_and_refresh_cookies():
 def test_refresh_prefers_cookie_token_over_body_token():
     fake_auth = FakeAuthService()
     client = _client_for(fake_auth)
+    client.cookies.set("refresh_token", "cookie-token")
 
     response = client.post(
         "/userservices/v1/refresh",
         json={"refresh_token": "body-token"},
-        cookies={"refresh_token": "cookie-token"},
     )
 
     assert response.status_code == 200
@@ -153,15 +153,16 @@ def test_refresh_rejects_missing_refresh_token():
 
 
 def test_get_user_from_token_requires_both_cookies(user_model):
-    client = _client_for(FakeAuthService(user_model=user_model))
+    missing_access_client = _client_for(FakeAuthService(user_model=user_model))
+    missing_access_client.cookies.set("refresh_token", "refresh-token")
+    missing_refresh_client = _client_for(FakeAuthService(user_model=user_model))
+    missing_refresh_client.cookies.set("access_token", "access-token")
 
-    missing_access = client.get(
+    missing_access = missing_access_client.get(
         "/userservices/v1/getUserFromToken",
-        cookies={"refresh_token": "refresh-token"},
     )
-    missing_refresh = client.get(
+    missing_refresh = missing_refresh_client.get(
         "/userservices/v1/getUserFromToken",
-        cookies={"access_token": "access-token"},
     )
 
     assert missing_access.status_code == 401
@@ -173,11 +174,10 @@ def test_get_user_from_token_requires_both_cookies(user_model):
 def test_get_user_from_token_forwards_cookie_pair_to_auth_service(user_model):
     fake_auth = FakeAuthService(user_model=user_model)
     client = _client_for(fake_auth)
+    client.cookies.set("access_token", "access-token")
+    client.cookies.set("refresh_token", "refresh-token")
 
-    response = client.get(
-        "/userservices/v1/getUserFromToken",
-        cookies={"access_token": "access-token", "refresh_token": "refresh-token"},
-    )
+    response = client.get("/userservices/v1/getUserFromToken")
 
     assert response.status_code == 200
     assert response.json()["sub"] == user_model.sub
