@@ -109,10 +109,10 @@ def test_refresh_prefers_http_only_cookie_over_body(
 ):
     fake_auth = FakeAuthenticationService(user_model_factory)
     client = client_factory(fake_auth)
+    client.cookies.set("refresh_token", "cookie-refresh")
 
     response = client.post(
         "/userservices/v1/refresh",
-        cookies={"refresh_token": "cookie-refresh"},
         json={"refresh_token": "body-refresh"},
     )
 
@@ -146,15 +146,16 @@ def test_get_user_from_token_requires_both_cookies(
     user_model_factory,
 ):
     fake_auth = FakeAuthenticationService(user_model_factory)
-    client = client_factory(fake_auth)
+    client_missing_access = client_factory(fake_auth)
+    client_missing_access.cookies.set("refresh_token", "refresh-token")
+    client_missing_refresh = client_factory(fake_auth)
+    client_missing_refresh.cookies.set("access_token", "access-token")
 
-    missing_access = client.get(
+    missing_access = client_missing_access.get(
         "/userservices/v1/getUserFromToken",
-        cookies={"refresh_token": "refresh-token"},
     )
-    missing_refresh = client.get(
+    missing_refresh = client_missing_refresh.get(
         "/userservices/v1/getUserFromToken",
-        cookies={"access_token": "access-token"},
     )
 
     assert missing_access.status_code == 401
@@ -176,13 +177,11 @@ def test_get_user_from_token_forwards_cookie_pair_to_auth_service(
 ):
     fake_auth = FakeAuthenticationService(user_model_factory)
     client = client_factory(fake_auth)
+    client.cookies.set("access_token", "access-token")
+    client.cookies.set("refresh_token", "refresh-token")
 
     response = client.get(
         "/userservices/v1/getUserFromToken",
-        cookies={
-            "access_token": "access-token",
-            "refresh_token": "refresh-token",
-        },
     )
 
     assert response.status_code == 200
