@@ -68,10 +68,10 @@ def assert_auth_cookies_are_secure(response):
 def test_refresh_prefers_http_only_cookie_over_body(client):
     fake_auth = FakeRouteAuth()
     override_auth(fake_auth)
+    client.cookies.set("refresh_token", "cookie-refresh")
 
     response = client.post(
         "/userservices/v1/refresh",
-        cookies={"refresh_token": "cookie-refresh"},
         json={"refresh_token": "body-refresh"},
     )
 
@@ -107,8 +107,10 @@ def test_refresh_rejects_missing_refresh_token(client):
 def test_get_user_from_token_requires_cookie_pair(client, cookies, message):
     fake_auth = FakeRouteAuth()
     override_auth(fake_auth)
+    for name, value in cookies.items():
+        client.cookies.set(name, value)
 
-    response = client.get("/userservices/v1/getUserFromToken", cookies=cookies)
+    response = client.get("/userservices/v1/getUserFromToken")
 
     assert response.status_code == 401
     assert response.json() == {"code": "login_error", "message": message}
@@ -118,14 +120,10 @@ def test_get_user_from_token_requires_cookie_pair(client, cookies, message):
 def test_get_user_from_token_forwards_cookie_pair_to_auth_service(client, sample_user):
     fake_auth = FakeRouteAuth(user=sample_user)
     override_auth(fake_auth)
+    client.cookies.set("access_token", "access-token")
+    client.cookies.set("refresh_token", "refresh-token")
 
-    response = client.get(
-        "/userservices/v1/getUserFromToken",
-        cookies={
-            "access_token": "access-token",
-            "refresh_token": "refresh-token",
-        },
-    )
+    response = client.get("/userservices/v1/getUserFromToken")
 
     assert response.status_code == 200
     body = response.json()

@@ -39,7 +39,7 @@ class FakeUserRepository:
         ("phoneNumber", "123", "Invalid phone number length"),
         ("dateOfBirth", datetime.now(UTC) + timedelta(days=1), "future"),
         ("dateOfBirth", datetime.now(UTC) - timedelta(days=365 * 12), "at least 13"),
-        ("dateOfBirth", datetime.now(UTC) - timedelta(days=365 * 121), "not valid"),
+        ("dateOfBirth", datetime(1900, 1, 1, tzinfo=UTC), "not valid"),
     ],
 )
 def test_validate_register_payload_rejects_business_rule_violations(
