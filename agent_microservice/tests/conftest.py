@@ -1,14 +1,19 @@
-"""Shared fixtures for the agent graph test suite.
+"""Shared fixtures for the agent test suite.
 
-We set GEMINI_API_KEY *before* any app modules are imported. The module-level
-`ChatGoogleGenerativeAI(google_api_key=config.GEMINI_API_KEY)` construction
-would otherwise fail at import time. We never hit the real Gemini API — every
-test patches the two module-level LLM singletons with RunnableLambda fakes.
+Config defaults must be set before any app modules are imported because the
+settings object and Gemini clients are created at module import time. Tests
+patch graph/service collaborators, so these values are never used externally.
 """
 
 import os
 
 os.environ.setdefault("GEMINI_API_KEY", "test-key-unused-because-we-mock")
+os.environ.setdefault("PORT", "8000")
+os.environ.setdefault("POSTGRES_DB_URI", "postgresql://user:pass@localhost:5432/test")
+os.environ.setdefault("AWS_ACCESS_KEY_ID", "test-access-key")
+os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test-secret-key")
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+os.environ.setdefault("AWS_BUCKET_NAME", "test-bucket")
 
 import uuid
 from datetime import datetime
@@ -18,19 +23,12 @@ import pytest
 from langchain_core.runnables import RunnableLambda  # type: ignore
 
 
-@pytest.fixture(autouse=True)
-def noWritesToDisk(monkeypatch):
-    """Stop buildingMarketingBrief from writing to Backend/testSummary/."""
-    from app.services import agentGraph as AG
-
-    monkeypatch.setattr(AG, "writeSummaryToFile", lambda response: None)
-
-
 @pytest.fixture
 def samplePayload():
     from app.models.AgentModels import AgentRunRequest
 
     return AgentRunRequest(
+        userId="user-123",
         url="https://example.com/docs",
         numberOfPosts=1,
         startDate=datetime(2026, 5, 1, 9, 0),
@@ -42,6 +40,7 @@ def multiPostPayload():
     from app.models.AgentModels import AgentRunRequest
 
     return AgentRunRequest(
+        userId="user-123",
         url="https://example.com/docs",
         numberOfPosts=3,
         startDate=datetime(2026, 5, 1, 9, 0),
