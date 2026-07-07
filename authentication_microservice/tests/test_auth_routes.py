@@ -85,7 +85,7 @@ class TestRefreshRoute:
 
         response = client.post(
             "/userservices/v1/refresh",
-            cookies={"refresh_token": "cookie-refresh.jwt"},
+            headers={"Cookie": "refresh_token=cookie-refresh.jwt"},
             json={"refresh_token": "body-refresh.jwt"},
         )
 
@@ -131,7 +131,7 @@ class TestGetUserFromTokenRoute:
     def test_requires_access_cookie(self, client):
         response = client.get(
             "/userservices/v1/getUserFromToken",
-            cookies={"refresh_token": "refresh.jwt"},
+            headers={"Cookie": "refresh_token=refresh.jwt"},
         )
 
         assert response.status_code == 401
@@ -143,7 +143,7 @@ class TestGetUserFromTokenRoute:
     def test_requires_refresh_cookie(self, client):
         response = client.get(
             "/userservices/v1/getUserFromToken",
-            cookies={"access_token": "access.jwt"},
+            headers={"Cookie": "access_token=access.jwt"},
         )
 
         assert response.status_code == 401
@@ -159,10 +159,7 @@ class TestGetUserFromTokenRoute:
     ):
         response = client.get(
             "/userservices/v1/getUserFromToken",
-            cookies={
-                "access_token": "access.jwt",
-                "refresh_token": "refresh.jwt",
-            },
+            headers={"Cookie": "access_token=access.jwt; refresh_token=refresh.jwt"},
         )
 
         assert response.status_code == 200
