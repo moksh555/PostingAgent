@@ -51,7 +51,7 @@ def test_refresh_prefers_cookie_over_body(auth_client):
 
     response = client.post(
         "/userservices/v1/refresh",
-        cookies={"refresh_token": "cookie-refresh"},
+        headers={"cookie": "refresh_token=cookie-refresh"},
         json={"refresh_token": "body-refresh"},
     )
 
@@ -94,11 +94,11 @@ def test_get_user_from_token_requires_access_and_refresh_cookies(auth_client):
 
     missing_access = client.get(
         "/userservices/v1/getUserFromToken",
-        cookies={"refresh_token": "refresh-token"},
+        headers={"cookie": "refresh_token=refresh-token"},
     )
     missing_refresh = client.get(
         "/userservices/v1/getUserFromToken",
-        cookies={"access_token": "access-token"},
+        headers={"cookie": "access_token=access-token"},
     )
 
     assert missing_access.status_code == 401
@@ -113,10 +113,7 @@ def test_get_user_from_token_forwards_cookie_pair(auth_client, sample_user):
 
     response = client.get(
         "/userservices/v1/getUserFromToken",
-        cookies={
-            "access_token": "access-token",
-            "refresh_token": "refresh-token",
-        },
+        headers={"cookie": "access_token=access-token; refresh_token=refresh-token"},
     )
 
     assert response.status_code == 200
